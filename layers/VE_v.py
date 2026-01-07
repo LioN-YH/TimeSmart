@@ -48,55 +48,54 @@ class MT2VEncoderFusion(nn.Module):
     # 根据融合策略和权重信息进行时序图像化
     def fuse(self, x, ts2img_weights, fusion_strategy, save_images=False):
         B, L, D = x.shape
-        # 1. 选择最优
-        # 获取每个样本每个变量权重最大的方法索引，对应进行图像化转换
+        # 1. 选择最优 (使用Straight-Through Estimator保持梯度传导)
         if fusion_strategy == "select_best":
-            C = 3 if self.three_channel_image else 1
-            out = torch.zeros(
-                B,
-                D,
-                C,
-                self.image_size,
-                self.image_size,
-                device=x.device,
-                dtype=x.dtype,
-            )
-            for b in range(B):
-                for d in range(D):
-                    w = ts2img_weights[b, d]
-                    idx = torch.argmax(w).item()
-                    method = ts2img_methods[idx]
-                    img = self.ts2img_single(
-                        x[b, :, d],
-                        method,
-                        force_one_channel=not self.three_channel_image,
-                    )
-                    out[b, d] = img
-            return out  # [B, D, C, H, W]
+            # 计算所有方法的图像 (B, D, 7, C, H, W)
+            imgs = self.compute_all_method_images(x, save_images)
 
-        # 2. 选择Top3堆叠
-        # 获取每个样本每个变量Top3方法，转换后堆叠为RGB三通道图像
+            # 生成硬选择掩码，但保留梯度
+            # idx: (B, D, 1)
+            idx = torch.argmax(ts2img_weights, dim=-1, keepdim=True)
+            mask_hard = torch.zeros_like(ts2img_weights).scatter_(-1, idx, 1.0)
+
+            # Straight-Through Estimator: forward=mask_hard, backward=ts2img_weights
+            mask = mask_hard - ts2img_weights.detach() + ts2img_weights
+
+            # (B, D, 7, 1, 1, 1)
+            mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+
+            # (B, D, C, H, W)
+            out = (imgs * mask).sum(dim=2)
+            return out
+
+        # 2. 选择Top3堆叠 (使用Straight-Through Estimator保持梯度传导)
         elif fusion_strategy == "top3_stack":
-            out = torch.zeros(
-                B,
-                D,
-                3,
-                self.image_size,
-                self.image_size,
-                device=x.device,
-                dtype=x.dtype,
-            )
-            for b in range(B):
-                for d in range(D):
-                    w = ts2img_weights[b, d]
-                    topk = torch.topk(w, k=3, dim=-1).indices
-                    for c in range(3):
-                        method = ts2img_methods[int(topk[c].item())]
-                        img = self.ts2img_single(
-                            x[b, :, d], method, force_one_channel=True
-                        )
-                        out[b, d, c] = img[0]
-            return out  # [B, D, 3, H, W]
+            imgs = self.compute_all_method_images(x, save_images)
+            # 确保使用单通道进行堆叠
+            if imgs.shape[3] == 3:
+                imgs_1c = imgs[:, :, :, 0:1, :, :]  # (B, D, 7, 1, H, W)
+            else:
+                imgs_1c = imgs
+
+            # 获取Top3索引
+            _, topk_indices = torch.topk(ts2img_weights, k=3, dim=-1)
+
+            out_channels = []
+            for k in range(3):
+                # 第k个channel对应第k大的方法
+                idx = topk_indices[:, :, k : k + 1]
+                mask_hard = torch.zeros_like(ts2img_weights).scatter_(-1, idx, 1.0)
+                mask = mask_hard - ts2img_weights.detach() + ts2img_weights
+
+                mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+
+                # (B, D, 1, H, W)
+                c_img = (imgs_1c * mask).sum(dim=2)
+                out_channels.append(c_img)
+
+            out = torch.cat(out_channels, dim=2)  # (B, D, 3, H, W)
+            return out
+
         # 3. 加权融合
         # 计算每个样本每个变量每个方法的时序图像化结果，根据权重进行加权求和
         elif fusion_strategy == "weighted_sum":
@@ -152,55 +151,54 @@ class MT2VEncoderFusionOpt(nn.Module):
     # 根据融合策略和权重信息进行时序图像化
     def fuse(self, x, ts2img_weights, fusion_strategy, save_images=False):
         B, L, D = x.shape
-        # 1. 选择最优
-        # 获取每个样本每个变量权重最大的方法索引，对应进行图像化转换
+        # 1. 选择最优 (使用Straight-Through Estimator保持梯度传导)
         if fusion_strategy == "select_best":
-            C = 3 if self.three_channel_image else 1
-            out = torch.zeros(
-                B,
-                D,
-                C,
-                self.image_size,
-                self.image_size,
-                device=x.device,
-                dtype=x.dtype,
-            )
-            for b in range(B):
-                for d in range(D):
-                    w = ts2img_weights[b, d]
-                    idx = torch.argmax(w).item()
-                    method = ts2img_methods[idx]
-                    img = self.ts2img_single(
-                        x[b, :, d],
-                        method,
-                        force_one_channel=not self.three_channel_image,
-                    )
-                    out[b, d] = img
-            return out  # [B, D, C, H, W]
+            # 计算所有方法的图像 (B, D, 7, C, H, W)
+            imgs = self.compute_all_method_images(x, save_images)
 
-        # 2. 选择Top3堆叠
-        # 获取每个样本每个变量Top3方法，转换后堆叠为RGB三通道图像
+            # 生成硬选择掩码，但保留梯度
+            # idx: (B, D, 1)
+            idx = torch.argmax(ts2img_weights, dim=-1, keepdim=True)
+            mask_hard = torch.zeros_like(ts2img_weights).scatter_(-1, idx, 1.0)
+
+            # Straight-Through Estimator: forward=mask_hard, backward=ts2img_weights
+            mask = mask_hard - ts2img_weights.detach() + ts2img_weights
+
+            # (B, D, 7, 1, 1, 1)
+            mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+
+            # (B, D, C, H, W)
+            out = (imgs * mask).sum(dim=2)
+            return out
+
+        # 2. 选择Top3堆叠 (使用Straight-Through Estimator保持梯度传导)
         elif fusion_strategy == "top3_stack":
-            out = torch.zeros(
-                B,
-                D,
-                3,
-                self.image_size,
-                self.image_size,
-                device=x.device,
-                dtype=x.dtype,
-            )
-            for b in range(B):
-                for d in range(D):
-                    w = ts2img_weights[b, d]
-                    topk = torch.topk(w, k=3, dim=-1).indices
-                    for c in range(3):
-                        method = ts2img_methods[int(topk[c].item())]
-                        img = self.ts2img_single(
-                            x[b, :, d], method, force_one_channel=True
-                        )
-                        out[b, d, c] = img[0]
-            return out  # [B, D, 3, H, W]
+            imgs = self.compute_all_method_images(x, save_images)
+            # 确保使用单通道进行堆叠
+            if imgs.shape[3] == 3:
+                imgs_1c = imgs[:, :, :, 0:1, :, :]  # (B, D, 7, 1, H, W)
+            else:
+                imgs_1c = imgs
+
+            # 获取Top3索引
+            _, topk_indices = torch.topk(ts2img_weights, k=3, dim=-1)
+
+            out_channels = []
+            for k in range(3):
+                # 第k个channel对应第k大的方法
+                idx = topk_indices[:, :, k : k + 1]
+                mask_hard = torch.zeros_like(ts2img_weights).scatter_(-1, idx, 1.0)
+                mask = mask_hard - ts2img_weights.detach() + ts2img_weights
+
+                mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+
+                # (B, D, 1, H, W)
+                c_img = (imgs_1c * mask).sum(dim=2)
+                out_channels.append(c_img)
+
+            out = torch.cat(out_channels, dim=2)  # (B, D, 3, H, W)
+            return out
+
         # 3. 加权融合
         # 计算每个样本每个变量每个方法的时序图像化结果，根据权重进行加权求和
         elif fusion_strategy == "weighted_sum":

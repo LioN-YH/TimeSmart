@@ -1,7 +1,6 @@
 
 /*1219*/
 /*1228*/
-/*Logs_mfe*/
 /*AllResults*/
 /*output_test*/
 /*src*/
@@ -13,3 +12,8 @@ dataset
 **/__pycache__/
 /*ts_images*/
 /*oldCode*/
+/*Result*/
+/*Logs*/
+/*checkpoints*/
+/*Checkpoints*/
+/*ProgressLog*/

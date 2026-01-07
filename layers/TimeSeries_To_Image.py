@@ -38,16 +38,15 @@ def time_series_to_simple_image(x_enc, image_size, context_len, periodicity):
     # Reshape to [B * nvars, 1, f, p]
     x_2d = einops.rearrange(x_pad, "b n (p f) -> (b n) 1 f p", f=periodicity)
 
-    # Resize the time series data
-    x_resized_2d = F.interpolate(
-        x_2d, size=(image_size, image_size), mode="bilinear", align_corners=False
-    )
+    # CHANGE: 【2026/1/6】删除多余的插值处理，重写的processor将进行统一的resize
+    # # Resize the time series data
+    # x_2d = F.interpolate(
+    #     x_2d, size=(image_size, image_size), mode="bilinear", align_corners=False
+    # )
 
     # Convert to 3-channel image
     # 转化为三通道图像
-    images = einops.repeat(
-        x_resized_2d, "b 1 h w -> b c h w", c=3
-    )  # [B * nvars, 3, H, W]
+    images = einops.repeat(x_2d, "b 1 h w -> b c h w", c=3)  # [B * nvars, 3, H, W]
 
     # Reshape back to [B, nvars, 3, H, W] and average over nvars
     # 重塑回 [B, nvars, 3, H, W] 并在 nvars 上求平均
@@ -82,16 +81,15 @@ def time_series_to_simple_image_v(x_enc, image_size, context_len, periodicity):
     # Reshape to [B, nvars, f, p]
     x_2d = einops.rearrange(x_pad, "b n (p f) -> b n f p", f=periodicity)
 
-    # Resize the time series data
-    x_resized_2d = F.interpolate(
-        x_2d, size=(image_size, image_size), mode="bilinear", align_corners=False
-    )
+    # CHANGE: 【2026/1/6】删除多余的插值处理，重写的processor将进行统一的resize
+    # # Resize the time series data
+    # x_2d = F.interpolate(
+    #     x_2d, size=(image_size, image_size), mode="bilinear", align_corners=False
+    # )
 
     # Convert to 3-channel image
     # 转化为三通道图像
-    images = einops.repeat(
-        x_resized_2d, "b n h w -> b n c h w", c=3
-    )  # [B, nvars, 3, H, W]
+    images = einops.repeat(x_2d, "b n h w -> b n c h w", c=3)  # [B, nvars, 3, H, W]
 
     return images
 

@@ -1,7 +1,7 @@
 import pandas as pd
 import plotly.express as px
 
-# INTRO：可视化csv文件
+# INTRO：可视化csv文件，绘制Plot，观察数据集特征
 # 支持：
 # 鼠标滚轮缩放
 # 拖拽平移

@@ -1,7 +1,7 @@
 export TOKENIZERS_PARALLELISM=false
 model_name=TimeVLM_v_l
 vlm_type=clip
-gpu=2
+gpu=1
 image_size=56
 norm_const=0.4
 three_channel_image=True

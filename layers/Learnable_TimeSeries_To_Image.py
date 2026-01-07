@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from pytorch_wavelets import DWTForward
 import matplotlib.pyplot as plt
 import numpy as np
+import einops
 
 
 class TimeSeriesVisualizer:
@@ -143,13 +144,14 @@ class LearnableTimeSeriesToImage(nn.Module):
         x_enc = F.tanh(self.conv2d_1(x_enc))
         x_enc = F.tanh(self.conv2d_2(x_enc))
 
-        # Resize to target image size
-        x_enc = F.interpolate(
-            x_enc,
-            size=(self.image_size, self.image_size),
-            mode="bilinear",
-            align_corners=False,
-        )
+        # CHANGE: 【2026/1/6】删除多余的插值处理，重写的processor将进行统一的resize
+        # # Resize to target image size
+        # x_enc = F.interpolate(
+        #     x_enc,
+        #     size=(self.image_size, self.image_size),
+        #     mode="bilinear",
+        #     align_corners=False,
+        # )
 
         return x_enc  # [B, output_channels, H, W]
 
@@ -261,16 +263,15 @@ class LearnableTimeSeriesToImage_v(nn.Module):
             self.conv2d_2(x_enc)
         )  # [B*D, output_channels, grid_size, grid_size]
 
-        # Resize to target image size
-        x_enc = F.interpolate(
-            x_enc,
-            size=(self.image_size, self.image_size),
-            mode="bilinear",
-            align_corners=False,
-        )
+        # CHANGE: 【2026/1/6】删除多余的插值处理，重写的processor将进行统一的resize
+        # # Resize to target image size
+        # x_enc = F.interpolate(
+        #     x_enc,
+        #     size=(self.image_size, self.image_size),
+        #     mode="bilinear",
+        #     align_corners=False,
+        # )
 
         # Reshape to recover D dimension
-        x_enc = x_enc.reshape(
-            B, D, self.output_channels, self.image_size, self.image_size
-        )
+        x_enc = einops.rearrange(x_enc, "(b d) c h w -> b d c h w", b=B, d=D)
         return x_enc  # [B, D, output_channels, H, W]

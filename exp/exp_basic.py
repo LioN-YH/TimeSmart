@@ -109,12 +109,6 @@ class Exp_Basic(object):
 
             self.model_dict["TimeVLM_v_l"] = TimeVLM_v_l
 
-        elif args.model == "TimeVLM_v_c":
-            from src.TimeVLM import model_v_c as TimeVLM_v_c
-
-            self.model_dict["TimeVLM_v_c"] = TimeVLM_v_c    
-            
-
         elif args.model == "VLMtest":
             from src.TimeSmart import test as VLMtest
 
