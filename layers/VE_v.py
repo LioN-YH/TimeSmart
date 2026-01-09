@@ -50,8 +50,18 @@ class MT2VEncoderFusion(nn.Module):
         B, L, D = x.shape
         # 1. 选择最优 (使用条件计算+Straight-Through Estimator保持梯度传导)
         if fusion_strategy == "select_best":
-            # idx: (B, D, 1)
-            idx = torch.argmax(ts2img_weights, dim=-1, keepdim=True)
+            # 训练时：使用 Gumbel-Softmax 采样，确保可微
+            # 推理时：直接选择权重最高的方法
+            if self.training:
+                one_hot = F.gumbel_softmax(
+                    ts2img_weights.log() + 1e-10, tau=1.0, hard=True, dim=-1
+                )  # Gumbel-Softmax 采样后的 one-hot 选择 (B, D, d_method)
+                idx = torch.argmax(
+                    one_hot, dim=-1, keepdim=True
+                )  # 被选中的方法索引 (B, D, 1)
+            else:
+                idx = torch.argmax(ts2img_weights, dim=-1, keepdim=True)
+                one_hot = None
 
             # 准备输出张量
             C = 3 if self.three_channel_image else 1
@@ -78,11 +88,12 @@ class MT2VEncoderFusion(nn.Module):
                 method_name = ts2img_methods[m_idx_int]
 
                 # 找到选择该方法的样本
+                # 例如：如果idx_flat为[0, 0, 1, 2, 2]，且m_idx_int为1，则mask_flat为[False, False, True, False, False]
                 mask_flat = idx_flat == m_idx_int
                 if not mask_flat.any():
                     continue
 
-                # 提取子集并计算
+                # 提取子集：拿出需要用当前方法处理的数据，进行对应的图像化转换
                 x_sub = x_flat[mask_flat]  # (N_sub, L, 1)
                 # out_sub: (N_sub, 1, H, W)
                 out_sub = self.encoder.get_ts2img_tensor(
@@ -96,7 +107,7 @@ class MT2VEncoderFusion(nn.Module):
                         out_sub = out_sub.repeat(1, 3, 1, 1)
                     # 如果本来就是3通道则不用repeat
 
-                # 填回结果
+                # 填回结果：对应填空
                 out_flat[mask_flat] = out_sub
 
             # 恢复形状
@@ -104,19 +115,33 @@ class MT2VEncoderFusion(nn.Module):
 
             # Straight-Through Estimator: 仅对选中的权重应用梯度
             # w_selected: (B, D, 1)
-            w_selected = torch.gather(ts2img_weights, -1, idx)
+            if self.training:
+                w_selected = (ts2img_weights * one_hot).sum(dim=-1, keepdim=True)
+            else:
+                w_selected = torch.gather(ts2img_weights, -1, idx)
             # w_selected: (B, D, 1, 1, 1)
             w_selected = w_selected.unsqueeze(-1).unsqueeze(-1)
 
             # out = out * (1 - w.detach() + w)
+            # 这就是STE技巧
             out = out * (1.0 - w_selected.detach() + w_selected)
 
             return out
 
         # 2. 选择Top3堆叠 (使用条件计算+Straight-Through Estimator保持梯度传导)
         elif fusion_strategy == "top3_stack":
-            # 获取Top3索引
-            _, topk_indices = torch.topk(ts2img_weights, k=3, dim=-1)  # (B, D, 3)
+            # 获取Top3索引（训练时加入Gumbel噪声增强探索）
+            if self.training:
+                logits = ts2img_weights.log() + 1e-10
+                gumbel = -torch.log(-torch.log(torch.rand_like(logits) + 1e-10) + 1e-10)
+                noisy_logits = logits + gumbel
+                topk_indices = torch.topk(
+                    noisy_logits, k=3, dim=-1
+                ).indices  # (B, D, 3)
+            else:
+                topk_indices = torch.topk(
+                    ts2img_weights, k=3, dim=-1
+                ).indices  # (B, D, 3)
 
             out_channels = []
             x_flat = x.reshape(B * D, L, 1)
@@ -127,7 +152,6 @@ class MT2VEncoderFusion(nn.Module):
                 idx_flat = idx_k.reshape(B * D)
 
                 # 准备该层的输出 (B*D, 1, H, W)
-                # 强制单通道
                 layer_out = torch.zeros(
                     B * D,
                     1,
@@ -137,6 +161,7 @@ class MT2VEncoderFusion(nn.Module):
                     dtype=x.dtype,
                 )
 
+                # 这部分处理逻辑和select_best基本一致
                 unique_methods = torch.unique(idx_k)
                 for m_idx in unique_methods:
                     m_idx_int = int(m_idx.item())
@@ -153,6 +178,7 @@ class MT2VEncoderFusion(nn.Module):
                     # out_sub: (N_sub, 1, H, W) or (N_sub, 3, H, W)
 
                     # Ensure single channel
+                    # 保证是单通道
                     if out_sub.shape[1] > 1:
                         out_sub = out_sub[:, 0:1, :, :]
 
@@ -228,8 +254,14 @@ class MT2VEncoderFusionOpt(nn.Module):
         B, L, D = x.shape
         # 1. 选择最优 (使用条件计算+Straight-Through Estimator保持梯度传导)
         if fusion_strategy == "select_best":
-            # idx: (B, D, 1)
-            idx = torch.argmax(ts2img_weights, dim=-1, keepdim=True)
+            if self.training:
+                one_hot = F.gumbel_softmax(
+                    ts2img_weights.log() + 1e-10, tau=1.0, hard=True, dim=-1
+                )
+                idx = torch.argmax(one_hot, dim=-1, keepdim=True)
+            else:
+                idx = torch.argmax(ts2img_weights, dim=-1, keepdim=True)
+                one_hot = None
 
             # 准备输出张量
             C = 3 if self.three_channel_image else 1
@@ -282,7 +314,10 @@ class MT2VEncoderFusionOpt(nn.Module):
 
             # Straight-Through Estimator: 仅对选中的权重应用梯度
             # w_selected: (B, D, 1)
-            w_selected = torch.gather(ts2img_weights, -1, idx)
+            if self.training:
+                w_selected = (ts2img_weights * one_hot).sum(dim=-1, keepdim=True)
+            else:
+                w_selected = torch.gather(ts2img_weights, -1, idx)
             # w_selected: (B, D, 1, 1, 1)
             w_selected = w_selected.unsqueeze(-1).unsqueeze(-1)
 
@@ -293,8 +328,18 @@ class MT2VEncoderFusionOpt(nn.Module):
 
         # 2. 选择Top3堆叠 (使用条件计算+Straight-Through Estimator保持梯度传导)
         elif fusion_strategy == "top3_stack":
-            # 获取Top3索引
-            _, topk_indices = torch.topk(ts2img_weights, k=3, dim=-1)  # (B, D, 3)
+            # 获取Top3索引（训练时加入Gumbel噪声增强探索）
+            if self.training:
+                logits = ts2img_weights.log() + 1e-10
+                gumbel = -torch.log(-torch.log(torch.rand_like(logits) + 1e-10) + 1e-10)
+                noisy_logits = logits + gumbel
+                topk_indices = torch.topk(
+                    noisy_logits, k=3, dim=-1
+                ).indices  # (B, D, 3)
+            else:
+                topk_indices = torch.topk(
+                    ts2img_weights, k=3, dim=-1
+                ).indices  # (B, D, 3)
 
             out_channels = []
             x_flat = x.reshape(B * D, L, 1)

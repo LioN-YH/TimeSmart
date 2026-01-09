@@ -89,7 +89,8 @@ class Config:
             15  # Corrected to 15 as per batch_extract_meta_features_gpu_Norm output
         )
         self.d_ts2img = 7  # Number of methods
-        self.ts2img_fusion_strategy = "select_best"  # Start with select_best
+        # self.ts2img_fusion_strategy = "select_best"  # Start with select_best
+        self.ts2img_fusion_strategy = "top3_stack"
         self.dset = "-"  # Skip meta file loading for now or handle it
 
 

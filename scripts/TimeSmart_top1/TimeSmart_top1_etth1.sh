@@ -3,7 +3,7 @@ model_name=TimeSmart_top3
 
 vlm_type=clip
 gpu=2
-image_size=56
+image_size=224
 norm_const=0.4
 three_channel_image=True
 finetune_vlm=False

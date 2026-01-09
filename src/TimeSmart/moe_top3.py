@@ -38,14 +38,19 @@ def timer(name="xxxx"):
     print(f"{name}: {end - start:.6f} s")
 
 
-# Router：路由模块，单层线性层，使用 Kaiming 均匀初始化
+# Router：路由模块，单层线性层，使用 LayerNorm 和 小权重初始化
 class Router(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(Router, self).__init__()
+        self.layer_norm = nn.LayerNorm(input_dim)
         self.fc = nn.Linear(input_dim, output_dim)
-        nn.init.kaiming_uniform_(self.fc.weight, a=math.sqrt(5))
+        # 使用较小的初始化权重，使初始输出接近均匀分布，促进探索
+        nn.init.normal_(self.fc.weight, mean=0.0, std=0.01)
+        nn.init.constant_(self.fc.bias, 0.0)
 
     def forward(self, meta_features):
+        # Apply LayerNorm
+        meta_features = self.layer_norm(meta_features)
         weights = torch.softmax(self.fc(meta_features), dim=-1)
         return weights
 

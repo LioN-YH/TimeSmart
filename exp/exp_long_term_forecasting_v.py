@@ -43,10 +43,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         total_loss = []
         self.model.eval()
         model_ref = self.model.module if hasattr(self.model, "module") else self.model
-        if hasattr(model_ref, "meta_mean"):
-            print(f"vali meta_mean: {model_ref.meta_mean}")
-        if hasattr(model_ref, "meta_std"):
-            print(f"vali meta_std: {model_ref.meta_std}")
+        # if hasattr(model_ref, "meta_mean"):
+        #     print(f"vali meta_mean: {model_ref.meta_mean}")
+        # if hasattr(model_ref, "meta_std"):
+        #     print(f"vali meta_std: {model_ref.meta_std}")
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(
                 vali_loader
@@ -103,6 +103,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             )
             model_ref.meta_records = []
             model_ref.ts2img_records = []
+            router_grad_row_norm_records = []
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(
                 train_loader
             ):
@@ -156,10 +157,23 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     time_now = time.time()
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
+                    scaler.unscale_(model_optim)
+                    if hasattr(model_ref, "router") and hasattr(model_ref.router, "fc"):
+                        g = model_ref.router.fc.weight.grad
+                        if g is not None:
+                            router_grad_row_norm_records.append(
+                                g.detach().norm(dim=1).float().cpu().numpy()
+                            )
                     scaler.step(model_optim)
                     scaler.update()
                 else:
                     loss.backward()
+                    if hasattr(model_ref, "router") and hasattr(model_ref.router, "fc"):
+                        g = model_ref.router.fc.weight.grad
+                        if g is not None:
+                            router_grad_row_norm_records.append(
+                                g.detach().norm(dim=1).float().cpu().numpy()
+                            )
                     model_optim.step()
             folder_path = (
                 self.args.results_folder
@@ -171,6 +185,35 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             w_list = [t.numpy() for t in model_ref.ts2img_records]
             w_arr = np.concatenate(w_list, axis=0) if len(w_list) > 0 else np.array([])
             np.save(os.path.join(folder_path, f"epoch_{epoch + 1}.npy"), w_arr)
+
+            diag_folder = (
+                self.args.results_folder + "train_results/" + setting + "/router_diag/"
+            )
+            os.makedirs(diag_folder, exist_ok=True)
+            if w_arr.size > 0 and len(w_arr.shape) == 3:
+                p = w_arr.reshape(-1, w_arr.shape[-1]).astype(np.float64)
+                entropy = (-(p * np.log(p + 1e-12)).sum(axis=-1)).mean()
+                top1 = p.max(axis=-1).mean()
+                idx = p.argmax(axis=-1)
+                counts = np.bincount(idx, minlength=p.shape[-1]).astype(np.float64)
+                counts = counts / max(1, idx.size)
+                np.savez(
+                    os.path.join(diag_folder, f"epoch_{epoch + 1}.npz"),
+                    entropy_mean=np.array(entropy, dtype=np.float32),
+                    top1_mean=np.array(top1, dtype=np.float32),
+                    method_hist=counts.astype(np.float32),
+                )
+
+            if len(router_grad_row_norm_records) > 0:
+                grad_arr = np.stack(router_grad_row_norm_records, axis=0).astype(
+                    np.float32
+                )
+                np.savez(
+                    os.path.join(diag_folder, f"epoch_{epoch + 1}_grad.npz"),
+                    grad_row_norm=grad_arr,
+                    grad_row_norm_mean=grad_arr.mean(axis=0),
+                    grad_row_norm_std=grad_arr.std(axis=0),
+                )
 
             # Save meta_records and ts2img_records to excel
             excel_folder = (
@@ -184,7 +227,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             # 1. Save meta_records
             meta_list = [t.numpy() for t in model_ref.meta_records]
             meta_arr = (
-                np.concatenate(meta_list, axis=0) if len(meta_list) > 0 else np.array([])
+                np.concatenate(meta_list, axis=0)
+                if len(meta_list) > 0
+                else np.array([])
             )
 
             if meta_arr.size > 0 and len(meta_arr.shape) == 3:
@@ -248,10 +293,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             os.makedirs(folder_path)
         self.model.eval()
         model_ref = self.model.module if hasattr(self.model, "module") else self.model
-        if hasattr(model_ref, "meta_mean"):
-            print(f"test meta_mean: {model_ref.meta_mean}")
-        if hasattr(model_ref, "meta_std"):
-            print(f"test meta_std: {model_ref.meta_std}")
+        # if hasattr(model_ref, "meta_mean"):
+        #     print(f"test meta_mean: {model_ref.meta_mean}")
+        # if hasattr(model_ref, "meta_std"):
+        #     print(f"test meta_std: {model_ref.meta_std}")
         model_ref.meta_records = []
         model_ref.ts2img_records = []
         with torch.no_grad():

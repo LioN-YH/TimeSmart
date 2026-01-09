@@ -86,7 +86,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoints",
         type=str,
-        default="./Checkpoints_TImeVLM_v_l/",
+        default="./Checkpoints_TimeVLM_v_l/",
         help="location of model checkpoints",
     )
 

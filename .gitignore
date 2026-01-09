@@ -17,3 +17,9 @@ dataset
 /*checkpoints*/
 /*Checkpoints*/
 /*ProgressLog*/
+/*output*/ 
+/*result*/
+/*01*/
+test_vis_etth1.py
+scripts/PatchTST_ETTh1.sh
+run.py
