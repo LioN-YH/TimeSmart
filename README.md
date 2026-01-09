@@ -1,26 +1,4 @@
-# Time-VLM: Exploring Multimodal Vision-Language Models for Augmented Time Series Forecasting
-
-<div align="center">
-
-[![Paper](https://img.shields.io/badge/Paper-ArXiv-red.svg)](https://arxiv.org/abs/2502.04395)
-[![Conference](https://img.shields.io/badge/Conference-ICML%202025-blue.svg)](https://icml.cc/virtual/2025/poster/44762)
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.2.2+-green.svg)](https://pytorch.org/)
-[![Stars](https://img.shields.io/github/stars/CityMind-Lab/ICML25-TimeVLM?style=social)](https://github.com/CityMind-Lab/ICML25-TimeVLM)
-
-</div>
-
-<div align="center">
-
-![Framework Architecture](framework.png)
-
-*Time-VLM Framework Architecture*
-
-</div>
-
-## 📖 Overview
-
-Time-VLM provides an extensible framework for integrating various Vision-Language Models (VLMs) with time series forecasting. It supports multiple VLM types (CLIP, BLIP2, ViLT) and enables flexible multimodal experiments.
+# TimeSmart: Change from Time-VLM [ICML 2025]
 
 ## 🚀 Quick Start
 
@@ -126,17 +104,3 @@ Time-VLM/
 | **`finetune_vlm`** | `False` | Finetune pre-trained VLM |
 | **`three_channel_image`** | `True` | Generate RGB images |
 | **`learnable_image`** | `True` | Learnable image generation |
-
-
-## 📚 Citation
-
-If you find this repository useful, please cite our paper:
-
-```bibtex
-@inproceedings{zhong2025time,
-  title={Time-VLM: Exploring Multimodal Vision-Language Models for Augmented Time Series Forecasting},
-  author={Zhong, Siru and Ruan, Weilin and Jin, Ming and Li, Huan and Wen, Qingsong and Liang, Yuxuan},
-  booktitle={Proceedings of the 42nd International Conference on Machine Learning},
-  year={2025}
-}
-```
