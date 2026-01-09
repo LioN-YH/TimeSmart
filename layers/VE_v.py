@@ -48,50 +48,125 @@ class MT2VEncoderFusion(nn.Module):
     # 根据融合策略和权重信息进行时序图像化
     def fuse(self, x, ts2img_weights, fusion_strategy, save_images=False):
         B, L, D = x.shape
-        # 1. 选择最优 (使用Straight-Through Estimator保持梯度传导)
+        # 1. 选择最优 (使用条件计算+Straight-Through Estimator保持梯度传导)
         if fusion_strategy == "select_best":
-            # 计算所有方法的图像 (B, D, 7, C, H, W)
-            imgs = self.compute_all_method_images(x, save_images)
-
-            # 生成硬选择掩码，但保留梯度
             # idx: (B, D, 1)
             idx = torch.argmax(ts2img_weights, dim=-1, keepdim=True)
-            mask_hard = torch.zeros_like(ts2img_weights).scatter_(-1, idx, 1.0)
 
-            # Straight-Through Estimator: forward=mask_hard, backward=ts2img_weights
-            mask = mask_hard - ts2img_weights.detach() + ts2img_weights
+            # 准备输出张量
+            C = 3 if self.three_channel_image else 1
+            out = torch.zeros(
+                B,
+                D,
+                C,
+                self.image_size,
+                self.image_size,
+                device=x.device,
+                dtype=x.dtype,
+            )
 
-            # (B, D, 7, 1, 1, 1)
-            mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            # 条件计算：仅计算被选中的方法
+            unique_methods = torch.unique(idx)
 
-            # (B, D, C, H, W)
-            out = (imgs * mask).sum(dim=2)
+            # 将x reshape为(B*D, L, 1)以便处理
+            x_flat = x.reshape(B * D, L, 1)
+            idx_flat = idx.reshape(B * D)
+            out_flat = out.view(B * D, C, self.image_size, self.image_size)
+
+            for m_idx in unique_methods:
+                m_idx_int = int(m_idx.item())
+                method_name = ts2img_methods[m_idx_int]
+
+                # 找到选择该方法的样本
+                mask_flat = idx_flat == m_idx_int
+                if not mask_flat.any():
+                    continue
+
+                # 提取子集并计算
+                x_sub = x_flat[mask_flat]  # (N_sub, L, 1)
+                # out_sub: (N_sub, 1, H, W)
+                out_sub = self.encoder.get_ts2img_tensor(
+                    x_sub, method_name, save_images=False
+                )
+
+                # 调整维度
+                if self.three_channel_image:
+                    # (N_sub, 1, H, W) -> (N_sub, 3, H, W)
+                    if out_sub.shape[1] == 1:
+                        out_sub = out_sub.repeat(1, 3, 1, 1)
+                    # 如果本来就是3通道则不用repeat
+
+                # 填回结果
+                out_flat[mask_flat] = out_sub
+
+            # 恢复形状
+            out = out_flat.view(B, D, C, self.image_size, self.image_size)
+
+            # Straight-Through Estimator: 仅对选中的权重应用梯度
+            # w_selected: (B, D, 1)
+            w_selected = torch.gather(ts2img_weights, -1, idx)
+            # w_selected: (B, D, 1, 1, 1)
+            w_selected = w_selected.unsqueeze(-1).unsqueeze(-1)
+
+            # out = out * (1 - w.detach() + w)
+            out = out * (1.0 - w_selected.detach() + w_selected)
+
             return out
 
-        # 2. 选择Top3堆叠 (使用Straight-Through Estimator保持梯度传导)
+        # 2. 选择Top3堆叠 (使用条件计算+Straight-Through Estimator保持梯度传导)
         elif fusion_strategy == "top3_stack":
-            imgs = self.compute_all_method_images(x, save_images)
-            # 确保使用单通道进行堆叠
-            if imgs.shape[3] == 3:
-                imgs_1c = imgs[:, :, :, 0:1, :, :]  # (B, D, 7, 1, H, W)
-            else:
-                imgs_1c = imgs
-
             # 获取Top3索引
-            _, topk_indices = torch.topk(ts2img_weights, k=3, dim=-1)
+            _, topk_indices = torch.topk(ts2img_weights, k=3, dim=-1)  # (B, D, 3)
 
             out_channels = []
+            x_flat = x.reshape(B * D, L, 1)
+
             for k in range(3):
                 # 第k个channel对应第k大的方法
-                idx = topk_indices[:, :, k : k + 1]
-                mask_hard = torch.zeros_like(ts2img_weights).scatter_(-1, idx, 1.0)
-                mask = mask_hard - ts2img_weights.detach() + ts2img_weights
+                idx_k = topk_indices[:, :, k : k + 1]  # (B, D, 1)
+                idx_flat = idx_k.reshape(B * D)
 
-                mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+                # 准备该层的输出 (B*D, 1, H, W)
+                # 强制单通道
+                layer_out = torch.zeros(
+                    B * D,
+                    1,
+                    self.image_size,
+                    self.image_size,
+                    device=x.device,
+                    dtype=x.dtype,
+                )
 
-                # (B, D, 1, H, W)
-                c_img = (imgs_1c * mask).sum(dim=2)
-                out_channels.append(c_img)
+                unique_methods = torch.unique(idx_k)
+                for m_idx in unique_methods:
+                    m_idx_int = int(m_idx.item())
+                    method_name = ts2img_methods[m_idx_int]
+
+                    mask_flat = idx_flat == m_idx_int
+                    if not mask_flat.any():
+                        continue
+
+                    x_sub = x_flat[mask_flat]
+                    out_sub = self.encoder.get_ts2img_tensor(
+                        x_sub, method_name, save_images=False
+                    )
+                    # out_sub: (N_sub, 1, H, W) or (N_sub, 3, H, W)
+
+                    # Ensure single channel
+                    if out_sub.shape[1] > 1:
+                        out_sub = out_sub[:, 0:1, :, :]
+
+                    layer_out[mask_flat] = out_sub
+
+                # Reshape back
+                layer_out = layer_out.view(B, D, 1, self.image_size, self.image_size)
+
+                # Apply STE gradient
+                w_selected = torch.gather(ts2img_weights, -1, idx_k)
+                w_selected = w_selected.unsqueeze(-1).unsqueeze(-1)
+
+                layer_out = layer_out * (1.0 - w_selected.detach() + w_selected)
+                out_channels.append(layer_out)
 
             out = torch.cat(out_channels, dim=2)  # (B, D, 3, H, W)
             return out
@@ -151,50 +226,125 @@ class MT2VEncoderFusionOpt(nn.Module):
     # 根据融合策略和权重信息进行时序图像化
     def fuse(self, x, ts2img_weights, fusion_strategy, save_images=False):
         B, L, D = x.shape
-        # 1. 选择最优 (使用Straight-Through Estimator保持梯度传导)
+        # 1. 选择最优 (使用条件计算+Straight-Through Estimator保持梯度传导)
         if fusion_strategy == "select_best":
-            # 计算所有方法的图像 (B, D, 7, C, H, W)
-            imgs = self.compute_all_method_images(x, save_images)
-
-            # 生成硬选择掩码，但保留梯度
             # idx: (B, D, 1)
             idx = torch.argmax(ts2img_weights, dim=-1, keepdim=True)
-            mask_hard = torch.zeros_like(ts2img_weights).scatter_(-1, idx, 1.0)
 
-            # Straight-Through Estimator: forward=mask_hard, backward=ts2img_weights
-            mask = mask_hard - ts2img_weights.detach() + ts2img_weights
+            # 准备输出张量
+            C = 3 if self.three_channel_image else 1
+            out = torch.zeros(
+                B,
+                D,
+                C,
+                self.image_size,
+                self.image_size,
+                device=x.device,
+                dtype=x.dtype,
+            )
 
-            # (B, D, 7, 1, 1, 1)
-            mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            # 条件计算：仅计算被选中的方法
+            unique_methods = torch.unique(idx)
 
-            # (B, D, C, H, W)
-            out = (imgs * mask).sum(dim=2)
+            # 将x reshape为(B*D, L, 1)以便处理
+            x_flat = x.reshape(B * D, L, 1)
+            idx_flat = idx.reshape(B * D)
+            out_flat = out.view(B * D, C, self.image_size, self.image_size)
+
+            for m_idx in unique_methods:
+                m_idx_int = int(m_idx.item())
+                method_name = ts2img_methods[m_idx_int]
+
+                # 找到选择该方法的样本
+                mask_flat = idx_flat == m_idx_int
+                if not mask_flat.any():
+                    continue
+
+                # 提取子集并计算
+                x_sub = x_flat[mask_flat]  # (N_sub, L, 1)
+                # out_sub: (N_sub, 1, H, W)
+                out_sub = self.encoder.get_ts2img_tensor_opt(
+                    x_sub, method_name, save_images=False
+                )
+
+                # 调整维度
+                if self.three_channel_image:
+                    # (N_sub, 1, H, W) -> (N_sub, 3, H, W)
+                    if out_sub.shape[1] == 1:
+                        out_sub = out_sub.repeat(1, 3, 1, 1)
+                    # 如果本来就是3通道则不用repeat
+
+                # 填回结果
+                out_flat[mask_flat] = out_sub
+
+            # 恢复形状
+            out = out_flat.view(B, D, C, self.image_size, self.image_size)
+
+            # Straight-Through Estimator: 仅对选中的权重应用梯度
+            # w_selected: (B, D, 1)
+            w_selected = torch.gather(ts2img_weights, -1, idx)
+            # w_selected: (B, D, 1, 1, 1)
+            w_selected = w_selected.unsqueeze(-1).unsqueeze(-1)
+
+            # out = out * (1 - w.detach() + w)
+            out = out * (1.0 - w_selected.detach() + w_selected)
+
             return out
 
-        # 2. 选择Top3堆叠 (使用Straight-Through Estimator保持梯度传导)
+        # 2. 选择Top3堆叠 (使用条件计算+Straight-Through Estimator保持梯度传导)
         elif fusion_strategy == "top3_stack":
-            imgs = self.compute_all_method_images(x, save_images)
-            # 确保使用单通道进行堆叠
-            if imgs.shape[3] == 3:
-                imgs_1c = imgs[:, :, :, 0:1, :, :]  # (B, D, 7, 1, H, W)
-            else:
-                imgs_1c = imgs
-
             # 获取Top3索引
-            _, topk_indices = torch.topk(ts2img_weights, k=3, dim=-1)
+            _, topk_indices = torch.topk(ts2img_weights, k=3, dim=-1)  # (B, D, 3)
 
             out_channels = []
+            x_flat = x.reshape(B * D, L, 1)
+
             for k in range(3):
                 # 第k个channel对应第k大的方法
-                idx = topk_indices[:, :, k : k + 1]
-                mask_hard = torch.zeros_like(ts2img_weights).scatter_(-1, idx, 1.0)
-                mask = mask_hard - ts2img_weights.detach() + ts2img_weights
+                idx_k = topk_indices[:, :, k : k + 1]  # (B, D, 1)
+                idx_flat = idx_k.reshape(B * D)
 
-                mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+                # 准备该层的输出 (B*D, 1, H, W)
+                # 强制单通道
+                layer_out = torch.zeros(
+                    B * D,
+                    1,
+                    self.image_size,
+                    self.image_size,
+                    device=x.device,
+                    dtype=x.dtype,
+                )
 
-                # (B, D, 1, H, W)
-                c_img = (imgs_1c * mask).sum(dim=2)
-                out_channels.append(c_img)
+                unique_methods = torch.unique(idx_k)
+                for m_idx in unique_methods:
+                    m_idx_int = int(m_idx.item())
+                    method_name = ts2img_methods[m_idx_int]
+
+                    mask_flat = idx_flat == m_idx_int
+                    if not mask_flat.any():
+                        continue
+
+                    x_sub = x_flat[mask_flat]
+                    out_sub = self.encoder.get_ts2img_tensor_opt(
+                        x_sub, method_name, save_images=False
+                    )
+                    # out_sub: (N_sub, 1, H, W) or (N_sub, 3, H, W)
+
+                    # Ensure single channel
+                    if out_sub.shape[1] > 1:
+                        out_sub = out_sub[:, 0:1, :, :]
+
+                    layer_out[mask_flat] = out_sub
+
+                # Reshape back
+                layer_out = layer_out.view(B, D, 1, self.image_size, self.image_size)
+
+                # Apply STE gradient
+                w_selected = torch.gather(ts2img_weights, -1, idx_k)
+                w_selected = w_selected.unsqueeze(-1).unsqueeze(-1)
+
+                layer_out = layer_out * (1.0 - w_selected.detach() + w_selected)
+                out_channels.append(layer_out)
 
             out = torch.cat(out_channels, dim=2)  # (B, D, 3, H, W)
             return out
