@@ -101,9 +101,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             model_ref = (
                 self.model.module if hasattr(self.model, "module") else self.model
             )
-            model_ref.meta_records = []
-            model_ref.ts2img_records = []
-            router_grad_row_norm_records = []
+            model_ref.meta_records = []  # 元特征记录
+            model_ref.ts2img_records = []  # ts2img权重记录
+            router_grad_row_norm_records = []  # 路由器梯度范数记录
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(
                 train_loader
             ):
@@ -155,11 +155,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     )
                     iter_count = 0
                     time_now = time.time()
+                # 梯度记录
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
                     scaler.unscale_(model_optim)
                     if hasattr(model_ref, "router") and hasattr(model_ref.router, "fc"):
-                        g = model_ref.router.fc.weight.grad
+                        g = model_ref.router.fc.weight.grad  # 路由器全连接层的梯度
                         if g is not None:
                             router_grad_row_norm_records.append(
                                 g.detach().norm(dim=1).float().cpu().numpy()
@@ -182,6 +183,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 + "/ts2img_weights/"
             )
             os.makedirs(folder_path, exist_ok=True)
+
+            # ts2img权重记录
             w_list = [t.numpy() for t in model_ref.ts2img_records]
             w_arr = np.concatenate(w_list, axis=0) if len(w_list) > 0 else np.array([])
             np.save(os.path.join(folder_path, f"epoch_{epoch + 1}.npy"), w_arr)
@@ -190,6 +193,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 self.args.results_folder + "train_results/" + setting + "/router_diag/"
             )
             os.makedirs(diag_folder, exist_ok=True)
+
+            # epoch_X.npz ：选择行为诊断
+            # 包含：entropy_mean(平均熵：衡量 Router 输出概率分布的不确定性),
+            #      top1_mean(Top-1 概率均值：Router 输出的最高概率值的平均数),
+            #      method_hist(选择直方图：统计了每个可视化方法被选为 Top-1 的频率)
             if w_arr.size > 0 and len(w_arr.shape) == 3:
                 p = w_arr.reshape(-1, w_arr.shape[-1]).astype(np.float64)
                 entropy = (-(p * np.log(p + 1e-12)).sum(axis=-1)).mean()
@@ -204,6 +212,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     method_hist=counts.astype(np.float32),
                 )
 
+            # epoch_X_grad.npz ：梯度健康诊断
+            # 包含：grad_row_norm(梯度范数矩阵：记录了该 Epoch 内每个 Step、每个 Expert 分支对应的梯度范数【num_sample, d_ts2img】),
+            #      grad_row_norm_mean(平均梯度范数：每个 Expert 接收到的平均梯度大小),
+            #      grad_row_norm_std(梯度范数标准差：梯度的波动情况)
             if len(router_grad_row_norm_records) > 0:
                 grad_arr = np.stack(router_grad_row_norm_records, axis=0).astype(
                     np.float32
@@ -216,6 +228,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 )
 
             # Save meta_records and ts2img_records to excel
+            # Excel格式记录保存
             excel_folder = (
                 self.args.results_folder
                 + "train_results/"
@@ -237,6 +250,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     excel_folder, f"epoch_{epoch + 1}_metaFeatures.xlsx"
                 )
                 with pd.ExcelWriter(meta_file_path) as writer:
+                    # 每个变量一个sheet，每行一个样本的元特征
                     # meta_arr shape: [N, D, d_meta]
                     for d in range(meta_arr.shape[1]):
                         df = pd.DataFrame(meta_arr[:, d, :])
