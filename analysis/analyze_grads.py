@@ -4,6 +4,8 @@ import glob
 import re
 import pandas as pd
 
+# INTRO：分析 MoE Router 在每个 epoch 中的梯度（每个专家的平均梯度范数）
+
 # 目录路径
 diag_dir = "/home/user10/TimeSmart/Result_top1/train_results/long_term_forecast_clip_ETTh1_512_192_TimeSmart_top3_ETTh1_ETTh1_ftM_ll48_sl512_pl192_fs1.0_dm128_dp0.1_False_select_best_0/router_diag"
 
@@ -55,49 +57,71 @@ for f in files:
 df = pd.DataFrame(results)
 df = df.set_index("Epoch")
 
-# 输出分析报告
-print("\n" + "=" * 50)
-print("Gradient Norm Analysis (Mean per Epoch)")
-print("=" * 50)
-print(df)
+# 保存结果到文件
+output_dir = "/home/user10/TimeSmart/analysis"
+report_path = os.path.join(output_dir, "router_grads_report.txt")
+grads_csv_path = os.path.join(output_dir, "router_grads.csv")
 
-# 计算每个 Expert 的总平均梯度
-print("\n" + "=" * 50)
-print("Overall Average Gradient per Expert")
-print("=" * 50)
-overall_mean = df.mean()
-print(overall_mean)
+# 保存 CSV
+df.to_csv(grads_csv_path)
+print(f"DataFrame saved to: {grads_csv_path}")
 
-# 检查不平衡性
-print("\n" + "=" * 50)
-print("Imbalance Analysis")
-print("=" * 50)
-max_grad = overall_mean.max()
-min_grad = overall_mean.min()
-ratio = max_grad / (min_grad + 1e-10)
+# 打开报告文件并输出
+with open(report_path, "w") as f:
 
-print(f"Max Gradient: {max_grad:.6f} ({overall_mean.idxmax()})")
-print(f"Min Gradient: {min_grad:.6f} ({overall_mean.idxmin()})")
-print(f"Max/Min Ratio: {ratio:.2f}")
+    def log(msg=""):
+        print(msg)
+        f.write(str(msg) + "\n")
 
-# 判断是否存在梯度饥饿
-# 阈值可以根据经验设定，例如比率超过 10 或 100，或者绝对值极小
-threshold_ratio = 10.0
-starved_experts = overall_mean[overall_mean < max_grad / threshold_ratio].index.tolist()
+    # 输出分析报告
+    log("\n" + "=" * 50)
+    log("Gradient Norm Analysis (Mean per Epoch)")
+    log("=" * 50)
+    log(df)
 
-if starved_experts:
-    print(f"\n[WARNING] Potential Gradient Starvation detected for: {starved_experts}")
-    print(
-        "These experts receive significantly smaller gradients compared to the dominant one."
-    )
-else:
-    print("\n[INFO] No severe Gradient Starvation detected (Ratio < 10).")
-    print("Gradients are relatively balanced across experts.")
+    # 计算每个 Expert 的总平均梯度
+    log("\n" + "=" * 50)
+    log("Overall Average Gradient per Expert")
+    log("=" * 50)
+    overall_mean = df.mean()
+    log(overall_mean)
 
-# 检查是否有 Expert 梯度趋近于 0
-dead_experts = overall_mean[overall_mean < 1e-6].index.tolist()
-if dead_experts:
-    print(f"\n[CRITICAL] Dead Experts detected (Gradient ~ 0): {dead_experts}")
+    # 检查不平衡性
+    log("\n" + "=" * 50)
+    log("Imbalance Analysis")
+    log("=" * 50)
+    max_grad = overall_mean.max()
+    min_grad = overall_mean.min()
+    ratio = max_grad / (min_grad + 1e-10)
+
+    log(f"Max Gradient: {max_grad:.6f} ({overall_mean.idxmax()})")
+    log(f"Min Gradient: {min_grad:.6f} ({overall_mean.idxmin()})")
+    log(f"Max/Min Ratio: {ratio:.2f}")
+
+    # 判断是否存在梯度饥饿
+    # 阈值可以根据经验设定，例如比率超过 10 或 100，或者绝对值极小
+    threshold_ratio = 10.0
+    starved_experts = overall_mean[
+        overall_mean < max_grad / threshold_ratio
+    ].index.tolist()
+
+    if starved_experts:
+        log(
+            f"\n[WARNING] Potential Gradient Starvation detected for: {starved_experts}"
+        )
+        log(
+            "These experts receive significantly smaller gradients compared to the dominant one."
+        )
+    else:
+        log("\n[INFO] No severe Gradient Starvation detected (Ratio < 10).")
+        log("Gradients are relatively balanced across experts.")
+
+    # 检查是否有 Expert 梯度趋近于 0
+    dead_experts = overall_mean[overall_mean < 1e-6].index.tolist()
+    if dead_experts:
+        log(f"\n[CRITICAL] Dead Experts detected (Gradient ~ 0): {dead_experts}")
+
+print(f"\nFull analysis report saved to: {report_path}")
 
 # 保存结果
 output_csv = os.path.join(diag_dir, "gradient_analysis.csv")
