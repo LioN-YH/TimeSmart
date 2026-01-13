@@ -2,8 +2,8 @@ export TOKENIZERS_PARALLELISM=false
 model_name=TimeSmart_top3
 
 vlm_type=clip
-gpu=0
-image_size=224
+gpu=2
+image_size=56
 norm_const=0.4
 three_channel_image=True
 finetune_vlm=False
@@ -19,7 +19,7 @@ ts2img_fusion_strategy=select_best
 # ts2img_fusion_strategy=top3_stack
 d_meta=15
 d_ts2img=7
-meta_folder=./dataset/Meta/
+meta_folder=./Meta/
 
 # Create Logs_top1 directory if it doesn't exist
 if [ ! -d "Logs_top1" ]; then
@@ -86,17 +86,17 @@ run_experiment() {
       --ts2img_fusion_strategy $ts2img_fusion_strategy > $log_file
 }
 
-# ETTh1, n_vars=7, periodicity=24
-run_experiment ETTh1 ETTh1 7 96 24 0.1 
-run_experiment ETTh1 ETTh1 7 192 24 0.1 
-run_experiment ETTh1 ETTh1 7 336 24 0.1 
-run_experiment ETTh1 ETTh1 7 720 24 0.1 
+# # ETTh1, n_vars=7, periodicity=24
+# run_experiment ETTh1 ETTh1 7 96 24 0.1 
+# run_experiment ETTh1 ETTh1 7 192 24 0.1 
+# run_experiment ETTh1 ETTh1 7 336 24 0.1 
+# run_experiment ETTh1 ETTh1 7 720 24 0.1 
 
-# # ETTh2, n_vars=7, periodicity=24
-# run_experiment ETTh2 ETTh2 7 96 24 0.1 
-# run_experiment ETTh2 ETTh2 7 192 24 0.1 
-# run_experiment ETTh2 ETTh2 7 336 24 0.1 
-# run_experiment ETTh2 ETTh2 7 720 24 0.1 
+# ETTh2, n_vars=7, periodicity=24
+run_experiment ETTh2 ETTh2 7 96 24 0.1 
+run_experiment ETTh2 ETTh2 7 192 24 0.1 
+run_experiment ETTh2 ETTh2 7 336 24 0.1 
+run_experiment ETTh2 ETTh2 7 720 24 0.1 
 
 # # # ETTm1, n_vars=7, periodicity=96
 # run_experiment ETTm1 ETTm1 7 96 96 0.1 

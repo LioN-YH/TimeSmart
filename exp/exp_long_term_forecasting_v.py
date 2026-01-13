@@ -79,6 +79,36 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         self.model.train()
         return total_loss
 
+    # CHANGE: 普适性更强的 Router 梯度获取方法
+    def _get_router_grad_norm(self, model):
+        # 尝试获取 Router 模块
+        if hasattr(model, "router"):
+            router = model.router
+            
+            # 策略1: 优先尝试直接获取名为 fc 或 fc2 的层 (常见命名)
+            # mo_top3 uses 'fc', moe_dev uses 'fc2' (as the output layer)
+            target_layers = ['fc', 'fc2']
+            for layer_name in target_layers:
+                if hasattr(router, layer_name):
+                    layer = getattr(router, layer_name)
+                    if hasattr(layer, 'weight') and layer.weight.grad is not None:
+                        return layer.weight.grad.detach().norm(dim=1).float().cpu().numpy()
+
+            # 策略2: 如果没找到指定名称，遍历所有子模块，找到最后一个 Linear 层
+            # 这种方法对于 Sequential 模型或者标准前馈网络通常有效，
+            # 因为最后一层 Linear 通常就是输出层，其输出维度对应专家数量
+            last_linear = None
+            for name, module in router.named_modules():
+                if isinstance(module, nn.Linear):
+                    last_linear = module
+            
+            if last_linear is not None and last_linear.weight.grad is not None:
+                # 假设 Linear 层的 weight 是 [out_features, in_features]
+                # norm(dim=1) 将返回 [out_features]，即对应每个 Expert 的梯度范数
+                return last_linear.weight.grad.detach().norm(dim=1).float().cpu().numpy()
+        
+        return None
+
     def train(self, setting):
         train_data, train_loader = self._get_data(flag="train")
         vali_data, vali_loader = self._get_data(flag="val")
@@ -159,22 +189,22 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
                     scaler.unscale_(model_optim)
-                    if hasattr(model_ref, "router") and hasattr(model_ref.router, "fc"):
-                        g = model_ref.router.fc.weight.grad  # 路由器全连接层的梯度
-                        if g is not None:
-                            router_grad_row_norm_records.append(
-                                g.detach().norm(dim=1).float().cpu().numpy()
-                            )
+                    
+                    # CHANGE: 使用普适性更强的方法获取 Router 梯度
+                    grad_norm = self._get_router_grad_norm(model_ref)
+                    if grad_norm is not None:
+                        router_grad_row_norm_records.append(grad_norm)
+                        
                     scaler.step(model_optim)
                     scaler.update()
                 else:
                     loss.backward()
-                    if hasattr(model_ref, "router") and hasattr(model_ref.router, "fc"):
-                        g = model_ref.router.fc.weight.grad
-                        if g is not None:
-                            router_grad_row_norm_records.append(
-                                g.detach().norm(dim=1).float().cpu().numpy()
-                            )
+                    
+                    # CHANGE: 使用普适性更强的方法获取 Router 梯度
+                    grad_norm = self._get_router_grad_norm(model_ref)
+                    if grad_norm is not None:
+                        router_grad_row_norm_records.append(grad_norm)
+
                     model_optim.step()
             folder_path = (
                 self.args.results_folder

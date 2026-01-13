@@ -119,6 +119,16 @@ class Exp_Basic(object):
 
             self.model_dict["TimeSmart_top3"] = TimeSmart_top3
 
+        elif args.model == "TimeSmart_dev":
+            from src.TimeSmart import moe_dev as TimeSmart_dev
+
+            self.model_dict["TimeSmart_dev"] = TimeSmart_dev
+
+        elif args.model == "TimeSmart_fixed":
+            from src.TimeSmart import moe_fixed as TimeSmart_fixed
+
+            self.model_dict["TimeSmart_fixed"] = TimeSmart_fixed
+
         # 获取设备（GPU 或 CPU）
         self.device = self._acquire_device()
         # 构建模型并移动到指定设备

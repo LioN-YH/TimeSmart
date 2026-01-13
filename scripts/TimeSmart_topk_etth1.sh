@@ -2,7 +2,7 @@ export TOKENIZERS_PARALLELISM=false
 model_name=TimeSmart_top3
 
 vlm_type=clip
-gpu=0
+gpu=2
 image_size=224
 norm_const=0.4
 three_channel_image=True
@@ -13,17 +13,17 @@ learning_rate=0.001
 seq_len=512
 percent=1
 train_epochs=30
-results_path=TimeSmart_top1.txt
-results_folder=./Result_top1/
-ts2img_fusion_strategy=select_best
+results_path=TimeSmart_topk.txt
+results_folder=./Result_topk/
+ts2img_fusion_strategy=weighted_sum
 # ts2img_fusion_strategy=top3_stack
 d_meta=15
 d_ts2img=7
 meta_folder=./dataset/Meta/
 
-# Create Logs_top1 directory if it doesn't exist
-if [ ! -d "Logs_top1" ]; then
-    mkdir Logs_top1
+# Create Logs_topk directory if it doesn't exist
+if [ ! -d "Logs_topk" ]; then
+    mkdir Logs_topk
 fi
 
 # Supports both few-shot (percent < 1.0) and full-shot (percent = 1.0)
@@ -42,7 +42,7 @@ run_experiment() {
         task_name="long_term_forecast"
     fi
 
-    log_file="Logs_top1/${model_name}_${dset}_${seq_len}_${pred_len}_${percent}p_${ts2img_fusion_strategy}_${dropout}.log"
+    log_file="Logs_topk/${model_name}_${dset}_${seq_len}_${pred_len}_${percent}p_${ts2img_fusion_strategy}_${dropout}.log"
     echo "Running experiment: dataset=${dset}, seq_len=${seq_len}, pred_len=${pred_len}, percent=${percent}, d_meta=${d_meta}, d_ts2img=${d_ts2img}, ts2img_fusion_strategy=${ts2img_fusion_strategy}, dropout=${dropout}"
 
     # Use runNew.py instead of runNew.py

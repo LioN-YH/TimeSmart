@@ -4,7 +4,8 @@ import os
 
 # Add current directory to path so we can import modules
 sys.path.append(os.getcwd())
-from src.TimeSmart.moe_top3 import Model
+# from src.TimeSmart.moe_top3 import Model
+from src.TimeSmart.moe_dev import Model
 
 # INTRO：用于检查moe_top3 （TimeSmart视觉分支-新预测头+Router）梯度传导是否正常
 
@@ -89,8 +90,9 @@ class Config:
             15  # Corrected to 15 as per batch_extract_meta_features_gpu_Norm output
         )
         self.d_ts2img = 7  # Number of methods
-        # self.ts2img_fusion_strategy = "select_best"  # Start with select_best
-        self.ts2img_fusion_strategy = "top3_stack"
+        self.ts2img_fusion_strategy = "select_best"  # Start with select_best
+        # self.ts2img_fusion_strategy = "top3_stack"
+        # self.ts2img_fusion_strategy = "weighted_sum"
         self.dset = "-"  # Skip meta file loading for now or handle it
 
 

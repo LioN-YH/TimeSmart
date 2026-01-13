@@ -1,9 +1,8 @@
 export TOKENIZERS_PARALLELISM=false
-model_name=TimeSmart_top3
-
+model_name=TimeVLM_v_l
 vlm_type=clip
 gpu=0
-image_size=224
+image_size=56
 norm_const=0.4
 three_channel_image=True
 finetune_vlm=False
@@ -13,17 +12,13 @@ learning_rate=0.001
 seq_len=512
 percent=1
 train_epochs=30
-results_path=TimeSmart_top1.txt
-results_folder=./Result_top1/
-ts2img_fusion_strategy=select_best
-# ts2img_fusion_strategy=top3_stack
-d_meta=15
-d_ts2img=7
-meta_folder=./dataset/Meta/
+results_path=TimeVLM_fix_l.txt
+results_folder=./Result_TimeVLM_fix/
+checkpoints=./Checkpoint_TimeVLM_fix/
 
-# Create Logs_top1 directory if it doesn't exist
-if [ ! -d "Logs_top1" ]; then
-    mkdir Logs_top1
+# Create Logs_TimeVLM_fix directory if it doesn't exist
+if [ ! -d "Logs_TimeVLM_fix" ]; then
+    mkdir Logs_TimeVLM_fix
 fi
 
 # Supports both few-shot (percent < 1.0) and full-shot (percent = 1.0)
@@ -42,8 +37,8 @@ run_experiment() {
         task_name="long_term_forecast"
     fi
 
-    log_file="Logs_top1/${model_name}_${dset}_${seq_len}_${pred_len}_${percent}p_${ts2img_fusion_strategy}_${dropout}.log"
-    echo "Running experiment: dataset=${dset}, seq_len=${seq_len}, pred_len=${pred_len}, percent=${percent}, d_meta=${d_meta}, d_ts2img=${d_ts2img}, ts2img_fusion_strategy=${ts2img_fusion_strategy}, dropout=${dropout}"
+    log_file="Logs_TimeVLM_fix/${model_name}_${dset}_${seq_len}_${pred_len}_${percent}p_${dropout}.log"
+    echo "Running experiment: dataset=${dset}, seq_len=${seq_len}, pred_len=${pred_len}, percent=${percent}, dropout=${dropout}"
 
     # Use runNew.py instead of runNew.py
     python -u runNew.py \
@@ -79,33 +74,12 @@ run_experiment() {
       --dropout $dropout \
       --results_path $results_path \
       --results_folder $results_folder \
-      --percent $percent \
-      --d_meta $d_meta \
-      --d_ts2img $d_ts2img \
-      --meta_folder $meta_folder \
-      --ts2img_fusion_strategy $ts2img_fusion_strategy > $log_file
+      --checkpoints $checkpoints \
+      --percent $percent > $log_file
 }
 
 # ETTh1, n_vars=7, periodicity=24
-run_experiment ETTh1 ETTh1 7 96 24 0.1 
-run_experiment ETTh1 ETTh1 7 192 24 0.1 
-run_experiment ETTh1 ETTh1 7 336 24 0.1 
-run_experiment ETTh1 ETTh1 7 720 24 0.1 
-
-# # ETTh2, n_vars=7, periodicity=24
-# run_experiment ETTh2 ETTh2 7 96 24 0.1 
-# run_experiment ETTh2 ETTh2 7 192 24 0.1 
-# run_experiment ETTh2 ETTh2 7 336 24 0.1 
-# run_experiment ETTh2 ETTh2 7 720 24 0.1 
-
-# # # ETTm1, n_vars=7, periodicity=96
-# run_experiment ETTm1 ETTm1 7 96 96 0.1 
-# run_experiment ETTm1 ETTm1 7 192 96 0.1 
-# run_experiment ETTm1 ETTm1 7 336 96 0.1 
-# run_experiment ETTm1 ETTm1 7 720 96 0.1 
-
-# # # ETTm2, n_vars=7, periodicity=96
-# run_experiment ETTm2 ETTm2 7 96 96 0.1 
-# run_experiment ETTm2 ETTm2 7 192 96 0.1 
-# run_experiment ETTm2 ETTm2 7 336 96 0.1 
-# run_experiment ETTm2 ETTm2 7 720 96 0.1 
+run_experiment ETTh1_opt ETTh1 4 96 24 0.1
+run_experiment ETTh1_opt ETTh1 4 192 24 0.1
+run_experiment ETTh1_opt ETTh1 4 336 24 0.1
+run_experiment ETTh1_opt ETTh1 4 720 24 0.1

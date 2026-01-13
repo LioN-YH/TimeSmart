@@ -38,15 +38,32 @@ def timer(name="xxxx"):
     print(f"{name}: {end - start:.6f} s")
 
 
-# Router：路由模块，单层线性层，使用 Kaiming 均匀初始化
+# Router：路由模块，多层感知机（MLP），使用 LayerNorm 和 GELU 激活函数
 class Router(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(Router, self).__init__()
-        self.fc = nn.Linear(input_dim, output_dim)
-        nn.init.kaiming_uniform_(self.fc.weight, a=math.sqrt(5))
+        self.layer_norm = nn.LayerNorm(input_dim)
+        # 使用 input_dim * 4 作为隐藏层维度，增强拟合能力
+        hidden_dim = input_dim * 4
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.activation = nn.GELU()
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+        
+        # 初始化权重
+        # 第一层使用 Kaiming 初始化
+        nn.init.kaiming_normal_(self.fc1.weight, mode='fan_in', nonlinearity='relu')
+        nn.init.constant_(self.fc1.bias, 0.0)
+        # 第二层（输出层）使用较小的初始化权重，使初始输出接近均匀分布，促进探索
+        nn.init.normal_(self.fc2.weight, mean=0.0, std=0.01)
+        nn.init.constant_(self.fc2.bias, 0.0)
 
     def forward(self, meta_features):
-        weights = torch.softmax(self.fc(meta_features), dim=-1)
+        # Apply LayerNorm
+        x = self.layer_norm(meta_features)
+        x = self.fc1(x)
+        x = self.activation(x)
+        x = self.fc2(x)
+        weights = torch.softmax(x, dim=-1)
         return weights
 
 
@@ -66,9 +83,9 @@ class Model(nn.Module):
         self.ts2img_records = []
 
         # CHANGE：新增模型参数meta_mean&meta_std用于标准化元特征
-        # 使用 register_buffer 注册为 buffer，这样它们会包含在 state_dict 中，随模型保存和加载
-        self.register_buffer("meta_mean", None)
-        self.register_buffer("meta_std", None)
+        self.meta_mean = None
+        self.meta_std = None
+
         self._init_meta_stats(config)
 
     # 初始化meta统计量
@@ -83,24 +100,22 @@ class Model(nn.Module):
                     data = json.load(f)
                     mean_val = None
                     std_val = None
-                    
+
                     if "mean" in data:
-                        mean_val = torch.tensor(data["mean"]).to(self.device)
+                        self.meta_mean = torch.tensor(data["mean"]).to(self.device)
                     if "std" in data:
+                        self.meta_std = torch.tensor(data["std"]).to(self.device)
                         std_val = torch.tensor(data["std"]).to(self.device)
-                    
                     print(f"Loaded meta stats from {meta_path}")
 
                     # 校验meta_mean形状的最后一个维度是否与config的d_meta一致
-                    if mean_val is not None:
-                        if mean_val.shape[-1] != config.d_meta:
+                    if self.meta_mean is not None:
+                        if self.meta_mean.shape[-1] != config.d_meta:
                             print(
-                                f"Warning: meta_mean dimension {mean_val.shape[-1]} does not match config.d_meta {config.d_meta}. Initialization skipped."
+                                f"Warning: meta_mean dimension {self.meta_mean.shape[-1]} does not match config.d_meta {config.d_meta}. Initialization skipped."
                             )
-                        else:
-                            # 更新 buffer
-                            self.meta_mean = mean_val
-                            self.meta_std = std_val
+                            self.meta_mean = None
+                            self.meta_std = None
 
     # 初始化各个模块
     def _init_modules(self, config):
@@ -207,7 +222,8 @@ class Model(nn.Module):
         # 1e-5：防止除零错误-接近零的方差会导致标准差接近零，在反向传播时可能引发梯度爆炸
         stdev = torch.sqrt(torch.var(x, dim=1, keepdim=True, unbiased=False) + 1e-5)
         # 使用配置中的norm_const进一步缩放标准差
-        stdev /= self.config.norm_const
+        # CHANGE: 之前的原地除法stdev /= self.config.norm_const会破坏计算图
+        stdev = stdev / self.config.norm_const
         x = x / stdev
         return x, means, stdev
 
@@ -222,7 +238,7 @@ class Model(nn.Module):
     # CHANGE：匹配VLM的图像输入要求，包括RGB通道以及[0, 255]范围
     def _normalize_images(images):
         # 1. 值域转换与类型转换
-        images = (images * 255).clamp(0, 255).to(torch.uint8)
+        # images = (images * 255).clamp(0, 255).to(torch.uint8)
         B, D, C, H, W = images.shape
         # 2. 确保 RGB 通道 (若 C=1)
         if C == 1:

@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import numpy as np
 import torch
 import torch.nn as nn
@@ -15,24 +16,12 @@ from layers.models_mae import *
 from transformers.models.vilt import *
 
 # 使用【GPU优化计算】的元特征提取和时序图像化模块
-from layers.meta_feature_v import batch_extract_meta_features_gpu
 from layers.VE_v import *
 
-# INTRO: TimeSmart的视觉分支，采用通道独立策略
+import time
 
-
-# Router：路由模块，单层线性层，使用 Kaiming 均匀初始化
-class Router(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(Router, self).__init__()
-        self.fc = nn.Linear(input_dim, output_dim)
-        nn.init.kaiming_uniform_(self.fc.weight, a=math.sqrt(5))
-
-    def forward(self, meta_features):
-        weights = torch.softmax(self.fc(meta_features), dim=-1)
-        return weights
-
-
+# Model for validating a single fixed imaging method (e.g., seg)
+# Skips Router and Meta Feature Extraction
 class Model(nn.Module):
 
     # 初始化模型
@@ -44,29 +33,18 @@ class Model(nn.Module):
         self._init_modules(config)
         self.vlm_model = self.vlm_manager.model
 
-        # CHANGE：监控元特征和时序图像化类型权重
+        # Monitor (Optional, keep empty lists for compatibility if needed)
         self.meta_records = []
         self.ts2img_records = []
 
     # 初始化各个模块
     def _init_modules(self, config):
-
-        # 路由模块
-        # input_dim：元特征维度 / output_dim：时序图像化类型数量
-        self.router = Router(input_dim=config.d_meta, output_dim=config.d_ts2img)
+        # NO ROUTER
 
         # 时序图像化模块
-        self.mt2v_encoder = MT2VEncoderFusion(config)
+        self.mt2v_encoder = MT2VEncoderFusionOpt(config)
 
         # 预测头
-        # CHANGE: 与TimeVLM_v采用的预测头设计不同
-        # self.prediction_head = nn.Sequential(
-        #     nn.Linear(self.vlm_manager.hidden_size, config.pred_len * 2),
-        #     nn.GELU(),
-        #     nn.Dropout(config.dropout),
-        #     nn.Linear(config.pred_len * 2, config.pred_len),
-        #     nn.Dropout(config.dropout),
-        # )
         self.prediction_head = nn.Sequential(
             nn.LayerNorm(self.vlm_manager.hidden_size),
             nn.Linear(self.vlm_manager.hidden_size, self.vlm_manager.hidden_size),
@@ -75,7 +53,7 @@ class Model(nn.Module):
             nn.Linear(self.vlm_manager.hidden_size, config.pred_len),
         )
 
-    # CHANGE: 主要函数
+    # 主要函数
     def forward(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, mask=None):
         B, L, D = x_enc.shape
         x_enc = x_enc.to(self.device)
@@ -84,34 +62,26 @@ class Model(nn.Module):
         # 1. 输入归一化
         x_enc, means, stdev = self._normalize_input(x_enc)
 
-        # Compute meta-features
-        # 2. 元特征提取
-        seq_len = self.config.seq_len
-        pred_len = self.config.pred_len
-        meta_tensor = batch_extract_meta_features_gpu(
-            x_enc, seq_len, pred_len
-        )  # [B, D, d_meta]
-        # print("meta_tensor:", meta_tensor.shape)
-
-        # Compute weights for time-series imaging types
-        # 3. 计算时序图像化类型权重
-        ts2img_weights = self.router(meta_tensor)  # [B, D, d_ts2img]
-        # print("ts2img_weights:", ts2img_weights.shape)
-
-        # CHANGE：仅在训练时记录元特征和时序图像化类型权重
-        if not self.training:
-            self.meta_records.append(meta_tensor.detach().cpu())
-            self.ts2img_records.append(ts2img_weights.detach().cpu())
-
-        # Convert time series data to images based on the fusion strategy and weights
-        # 4. 根据融合策略和权重，获取时序图像化结果
-        fusion_strategy = self.config.ts2img_fusion_strategy
+        # 2. Skip Meta Features & Router
+        
+        # 3. Direct Imaging (seg)
+        # Call underlying encoder directly for "seg"
+        # x_enc: [B, L, D] -> get_ts2img_tensor -> [B, D, H, W] (assuming compress_vars=False)
         save_images = self.config.save_images
-        images = self.mt2v_encoder(
-            x_enc, ts2img_weights, fusion_strategy, save_images
-        )  # [B, D, C, H, W]
+        
+        # Hardcode method to "seg"
+        method_name = "seg"
+        
+        # Note: get_ts2img_tensor returns [B, D, H, W]
+        images_raw = self.mt2v_encoder.encoder.get_ts2img_tensor(x_enc, method_name, save_images)
+        
+        # Reshape to [B, D, C, H, W]
+        # C is usually 1 from get_ts2img_tensor unless 3-channel
+        images = images_raw.unsqueeze(2) # [B, D, 1, H, W]
+        
+
+        # 4. Normalize Images
         images = self._normalize_images(images)  # [B, D, 3, H, W]
-        # print("images:", images.shape)
 
         # Process images with the VLM
         # 5. 输入VLM获取图像编码
@@ -123,7 +93,6 @@ class Model(nn.Module):
         vision_embeddings = torch.stack(feats, dim=1).reshape(
             B * D, -1
         )  # [B*D, hidden_size]
-        # print("vision_embeddings:", vision_embeddings.shape)
 
         # Make predictions
         # 6. 预测
@@ -131,7 +100,6 @@ class Model(nn.Module):
         predictions = einops.rearrange(
             predictions, "(b d) l -> b l d", b=B, d=D
         )  # [B, pred_len, D]
-        # print("predictions:", predictions.shape)
 
         # Denormalize output
         # 7. 输出反归一化
@@ -148,7 +116,7 @@ class Model(nn.Module):
         # 1e-5：防止除零错误-接近零的方差会导致标准差接近零，在反向传播时可能引发梯度爆炸
         stdev = torch.sqrt(torch.var(x, dim=1, keepdim=True, unbiased=False) + 1e-5)
         # 使用配置中的norm_const进一步缩放标准差
-        stdev /= self.config.norm_const
+        stdev = stdev / self.config.norm_const
         x = x / stdev
         return x, means, stdev
 
@@ -160,10 +128,7 @@ class Model(nn.Module):
 
     @staticmethod
     # 图像归一化函数
-    # CHANGE：匹配VLM的图像输入要求，包括RGB通道以及[0, 255]范围
     def _normalize_images(images):
-        # 1. 值域转换与类型转换
-        images = (images * 255).clamp(0, 255).to(torch.uint8)
         B, D, C, H, W = images.shape
         # 2. 确保 RGB 通道 (若 C=1)
         if C == 1:

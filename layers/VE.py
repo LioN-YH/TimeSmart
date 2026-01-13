@@ -605,13 +605,6 @@ class MT2VEncoder(nn.Module):
 
         return mtf
 
-    def norm(self, x):
-        x = x - x.min()
-        max_val = x.max()
-        if max_val > 0:
-            x = x / (max_val + 1e-6)
-        return x
-
     # 通过FFT识别周期
     def FFT_for_Period(self, x, k=2):
         # [B, T, C]
@@ -741,7 +734,6 @@ class MT2VEncoder(nn.Module):
             raise ValueError(
                 f"Unknown method: {method}. Choose from 'seg', 'gaf', 'rp', 'stft', 'wavelet', 'mel', 'mtf'"
             )
-        output = self.norm(output)
         if save_images:
             self.save_images(output, method, B)
         # compress_vars=True → B,1,H,W
@@ -770,7 +762,6 @@ class MT2VEncoder(nn.Module):
             raise ValueError(
                 f"Unknown method: {method}. Choose from 'seg', 'gaf', 'rp', 'stft', 'wavelet', 'mel', 'mtf'"
             )
-        output = self.norm(output)
         if save_images:
             self.save_images(output, method, B)
         # compress_vars=True → B,1,H,W
