@@ -4,8 +4,9 @@ import os
 
 # Add current directory to path so we can import modules
 sys.path.append(os.getcwd())
-# from src.TimeSmart.moe_top3 import Model
-from src.TimeSmart.moe_dev import Model
+from src.TimeSmart.moe_top3 import Model
+
+# from src.TimeSmart.moe_dev import Model
 
 # INTRO：用于检查moe_top3 （TimeSmart视觉分支-新预测头+Router）梯度传导是否正常
 
