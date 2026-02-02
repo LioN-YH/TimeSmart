@@ -73,12 +73,6 @@ class Exp_Basic(object):
 
             self.model_dict["TimeVLM"] = TimeVLM
 
-        # CHANGE:更改的模型
-        elif args.model == "TimeSmart":
-            from src.TimeSmart import model as TimeSmart
-
-            self.model_dict["TimeSmart"] = TimeSmart
-
         elif args.model == "TimeVLM-wo-Mul":
             from src.TimeVLM import model_woMul as TimeVLM_woMul
 
@@ -93,11 +87,6 @@ class Exp_Basic(object):
             from src.TimeSmart import model_moe as TimeSmart_moe_single
 
             self.model_dict["TimeSmart_moe_single"] = TimeSmart_moe_single
-
-        elif args.model == "TimeSmart_moe_v":
-            from src.TimeSmart import model_moe_v as TimeSmart_moe_v
-
-            self.model_dict["TimeSmart_moe_v"] = TimeSmart_moe_v
 
         elif args.model == "TimeSmart_test":
             from src.TimeSmart import model_test as TimeSmart_test
@@ -128,6 +117,11 @@ class Exp_Basic(object):
             from src.TimeSmart import moe_fixed as TimeSmart_fixed
 
             self.model_dict["TimeSmart_fixed"] = TimeSmart_fixed
+
+        elif args.model == "TimeApart":
+            from src.TimeApart import model as TimeApart
+
+            self.model_dict["TimeApart"] = TimeApart
 
         # 获取设备（GPU 或 CPU）
         self.device = self._acquire_device()

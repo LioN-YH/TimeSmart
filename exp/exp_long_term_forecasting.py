@@ -309,7 +309,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 epoch_gate_outputs.append(gate_outputs)
 
                 # 打印训练进度：当前损失、速度和预计剩余时间
-                if (i + 1) % 100 == 0:
+                if (i + 1) % 20 == 0:
                     print(
                         "\titers: {0}, epoch: {1} | loss: {2:.7f}".format(
                             i + 1, epoch + 1, loss.item()
@@ -555,7 +555,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             for i in range(preds.shape[0]):
                 x = preds[i].reshape(-1, 1)
                 y = trues[i].reshape(-1, 1)
-                if i % 100 == 0:
+                if i % 20 == 0:
                     print("calculating dtw iter:", i)
                 d, _, _, _ = accelerated_dtw(x, y, dist=manhattan_distance)
                 dtw_list.append(d)

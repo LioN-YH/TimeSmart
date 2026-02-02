@@ -2,7 +2,7 @@ import argparse
 import os
 import torch
 from exp.exp_few_shot_forecasting import Exp_Few_Shot_Forecast
-from exp.exp_long_term_forecasting_v import Exp_Long_Term_Forecast
+from exp.exp_long_term_forecasting_origin import Exp_Long_Term_Forecast
 from exp.exp_zero_shot_forecasting import Exp_Zero_Shot_Forecast
 from exp.exp_imputation import Exp_Imputation
 from exp.exp_short_term_forecasting import Exp_Short_Term_Forecast
@@ -13,10 +13,8 @@ from utils.tools import load_content
 import random
 import numpy as np
 
-# INTRO：TimeSmart新版本的run.py，适配于VE(纯张量计算)
-# INTRO：同样也适配于TimeSmart_v，但是需要对应修改一下调用的from exp.exp_long_term_forecasting_v import Exp_Long_Term_Forecast
 
-
+# INTRO：适配于TimeApart
 def str2bool(v):
     if isinstance(v, bool):
         return v
@@ -562,7 +560,8 @@ if __name__ == "__main__":
     # mel
     parser.add_argument(
         "--use_mel",
-        default=True,
+        action="store_true",
+        default=False,
         help="Whether to use the Mel-scale filterbank",
     )
     parser.add_argument(
@@ -630,25 +629,16 @@ if __name__ == "__main__":
     if args.is_training:
         for ii in range(args.itr):
             exp = Exp(args)
-            setting = (
-                "{}_{}_{}_{}_{}_{}_ft{}_ll{}_sl{}_pl{}_fs{}_dm{}_dp{}_{}_{}_{}".format(
-                    args.task_name,
-                    args.vlm_type,
-                    args.model_id,
-                    args.model,
-                    args.data,
-                    args.dset,
-                    args.features,
-                    args.label_len,
-                    args.seq_len,
-                    args.pred_len,
-                    args.percent,
-                    args.d_model,
-                    args.dropout,
-                    args.use_mem_gate,
-                    args.ts2img_fusion_strategy,
-                    ii,
-                )
+            setting = "{}_{}_{}_{}_{}_sl{}_pl{}_dp{}_{}".format(
+                args.ts2img_method,
+                args.model_id,
+                args.model,
+                args.data,
+                args.dset,
+                args.seq_len,
+                args.pred_len,
+                args.dropout,
+                ii,
             )
 
             print(
@@ -664,25 +654,16 @@ if __name__ == "__main__":
     else:
         ii = 0
         exp = Exp(args)
-        setting = (
-            "{}_{}_{}_{}_{}_{}_ft{}_ll{}_sl{}_pl{}_fs{}_dm{}_dp{}_{}_{}_{}".format(
-                args.task_name,
-                args.vlm_type,
-                args.model_id,
-                args.model,
-                args.data,
-                args.dset,
-                args.features,
-                args.label_len,
-                args.seq_len,
-                args.pred_len,
-                args.percent,
-                args.d_model,
-                args.dropout,
-                args.use_mem_gate,
-                args.ts2img_fusion_strategy,
-                ii,
-            )
+        setting = "{}_{}_{}_{}_{}_sl{}_pl{}_dp{}_{}".format(
+            args.ts2img_method,
+            args.model_id,
+            args.model,
+            args.data,
+            args.dset,
+            args.seq_len,
+            args.pred_len,
+            args.dropout,
+            ii,
         )
 
         print(">>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<".format(setting))

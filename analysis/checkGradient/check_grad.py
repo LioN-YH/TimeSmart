@@ -2,10 +2,10 @@ import torch
 import sys
 import os
 
-# Add current directory to path so we can import modules
-sys.path.append(os.getcwd())
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from src.TimeVLM.model_v_l import Model
 
+# 2026/1/20 因为联动修改导致目前该文件无法运行
 # INTRO：用于检查model_v_l （TimeVLM视觉分支-新预测头）梯度传导是否正常
 
 

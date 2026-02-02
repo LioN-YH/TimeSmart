@@ -7,7 +7,7 @@ import pandas as pd
 # INTRO：分析 MoE Router 在每个 epoch 中的梯度（每个专家的平均梯度范数）
 
 # 目录路径
-diag_dir = "/home/user10/TimeSmart/Result_top1/train_results/long_term_forecast_clip_ETTh1_512_336_TimeSmart_top3_ETTh1_ETTh1_ftM_ll48_sl512_pl336_fs1.0_dm128_dp0.1_False_select_best_0/router_diag"
+diag_dir = "Result_top1/train_results/long_term_forecast_clip_ETTh1_512_720_TimeSmart_top3_ETTh1_ETTh1_ftM_ll48_sl512_pl720_fs1.0_dm128_dp0.1_False_select_best_0/router_diag"
 
 # Expert 名称 (根据之前的分析)
 expert_names = ["wavelet", "mel", "mtf", "seg", "gaf", "rp", "stft"]

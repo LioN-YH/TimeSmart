@@ -71,6 +71,7 @@ class VLMManager:
 
         self._set_requires_grad(self.model, self.config.finetune_vlm)
         self.hidden_size = 512
+        self.vision_hidden_size = 768  # ViT-B/32 hidden size
         self.fusion_dim = self.hidden_size
         self.max_input_text_length = 77
         self.fused_feature_len = 9
@@ -289,13 +290,17 @@ class VLMManager:
             images = (images - mean) / std
 
             # 4. Forward pass directly through the model
-            image_features = self.model.get_image_features(pixel_values=images)
-            return image_features
+            # image_features = self.model.get_image_features(pixel_values=images)
+            # return image_features
+            outputs = self.model.vision_model(pixel_values=images)
+            # print(f"DEBUG: CLIP output shape: {outputs.last_hidden_state.shape}")
+            return outputs.last_hidden_state  # [B, 50, 768]
 
         # Fallback for non-tensor inputs (e.g. lists of PIL images)
         encoding = self.processor(images=images, return_tensors="pt").to(self.device)
-        image_features = self.model.get_image_features(**encoding)
-        return image_features  # Shape: [B, hidden_size]
+        # image_features = self.model.get_image_features(**encoding)
+        outputs = self.model.vision_model(**encoding)
+        return outputs.last_hidden_state  # Shape: [B, 50, 768]
 
     # TODO: 针对blip2/vilt也应该对应重写processor处理
     def _process_blip2_images_inputs(self, B, images):

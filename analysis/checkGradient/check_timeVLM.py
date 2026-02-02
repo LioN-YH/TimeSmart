@@ -3,9 +3,8 @@ import sys
 import os
 import numpy as np
 
-# Add current directory to path so we can import modules
-sys.path.append(os.getcwd())
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from src.TimeVLM.model import Model
 
 # INTRO：用于检查原始TimeVLM梯度传导是否正常

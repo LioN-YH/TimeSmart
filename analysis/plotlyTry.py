@@ -9,7 +9,7 @@ import plotly.express as px
 # 底部时间滑块快速定位时间段
 # 点击图例隐藏/显示某个变量
 
-csv_path = "dataset/ETTh1_opt.csv"
+csv_path = "/home/user10/TimeSmart/dataset/OT_trend.csv"
 
 df = pd.read_csv(csv_path)
 

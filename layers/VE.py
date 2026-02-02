@@ -12,11 +12,24 @@ import matplotlib.cm as cm
 import os
 
 # INTRO:时序图像转化模块，支持seg, gaf, rp, stft, wavelet, mel, mtf等多种方法
-# TODO：后续可以优化的方向在于，将融合策略合并至本模块中，可以减少一些冗余计算（例如对于Select-best，实际上只有一种图像化有效）
 
 # ts2img_methods = ["seg", "gaf", "rp", "stft", "wavelet", "mel", "mtf"]
 
-ts2img_methods = ["wavelet", "mel", "mtf", "seg", "gaf", "rp", "stft"]
+ts2img_methods = [
+    "wavelet",
+    "cwt",
+    "mel",
+    "mtf",
+    "seg",
+    "gaf",
+    "rp",
+    "stft",
+    "st",
+    "hilbert",
+    "plot",
+    "heat",
+    "smooth",
+]
 
 
 class MT2VEncoder(nn.Module):
@@ -56,6 +69,12 @@ class MT2VEncoder(nn.Module):
         self.mtf_downsample_threshold = getattr(config, "mtf_downsample_threshold", 256)
         self.use_fast_mode = getattr(config, "use_fast_mode", False)
 
+        # hilbert
+        self.hilbert_curve_cache = {}
+
+        # plot
+        self.plot_line_thickness = getattr(config, "plot_line_thickness", 6)
+
         # add
         self.method_times = {}
 
@@ -68,6 +87,24 @@ class MT2VEncoder(nn.Module):
         self.input_resize = self.safe_resize(
             (self.image_size, self.image_size), interpolation=interpolation
         )
+
+    def normalize_per_series(self, x, eps=1e-8):
+        # x: B, L, D -> normalize along L
+        x_min = x.amin(dim=1, keepdim=True)
+        x_max = x.amax(dim=1, keepdim=True)
+        return (x - x_min) / (x_max - x_min + eps)
+
+    def standardize_per_series(self, x, eps=1e-8):
+        # x: B, L, D or B*D, L -> normalize along L (dim 1)
+        x_mean = x.mean(dim=1, keepdim=True)
+        x_std = x.std(dim=1, keepdim=True)
+        return (x - x_mean) / (x_std + eps)
+
+    def normalize_per_image(self, x, eps=1e-8):
+        # x: B, D, H, W -> normalize along H, W
+        x_min = x.amin(dim=(-2, -1), keepdim=True)
+        x_max = x.amax(dim=(-2, -1), keepdim=True)
+        return (x - x_min) / (x_max - x_min + eps)
 
     def normalize_minmax(self, x, eps=1e-8):
         if x.numel() == 0:
@@ -82,53 +119,45 @@ class MT2VEncoder(nn.Module):
 
     def segmentation(self, x):
         B, L, D = x.shape
+
+        # CHANGE: Use Autocorrelation to find the dominant period
+        # periods, _ = self.FFT_for_Period(x, k=1)
+        # period = int(periods[0])
+        period = self.Autocorrelation_for_Period(x)
+
+        # Safety check for period
+        if period < 2:
+            period = 2
+
         x = einops.rearrange(x, "b s d -> b d s")
         pad_left = 0
-        if L % self.periodicity != 0:
-            pad_left = self.periodicity - L % self.periodicity
+        if L % period != 0:
+            pad_left = period - L % period
         x_pad = F.pad(x, (pad_left, 0), mode="replicate")
 
         x_2d = einops.rearrange(
             x_pad,
             "b d (p f) -> b d f p",
-            p=x_pad.size(-1) // self.periodicity,
-            f=self.periodicity,
+            p=x_pad.size(-1) // period,
+            f=period,
         )
 
+        # CHANGE：Multivariate Average Pooling
+        if self.compress_vars:
+            x_combined = torch.mean(x_2d, dim=1, keepdim=True)
+        else:
+            x_combined = x_2d
+
         x_resize = F.interpolate(
-            x_2d,
+            x_combined,
             size=(self.image_size, self.image_size),
             mode="bilinear",
             align_corners=False,
         )
 
-        # x_channels = torch.zeros(B, D, 1, self.image_size, self.image_size, device=x.device)
-
-        # for i in range(D):
-        #     channel = x_resize[:, i:i+1]
-        #     channel = self.normalize_minmax(channel)
-        #     x_channels[:, i] = channel
-
-        # x_combined = torch.mean(x_channels, dim=1)
-
-        # grid_size = self.image_size // 8
-        # grid_mask = torch.ones_like(x_combined)
-        # grid_mask[:, :, ::grid_size] = 0.95
-        # grid_mask[:, :, :, ::grid_size] = 0.95
-        # x_combined = x_combined * grid_mask
-
-        # CHANGE：Change the initialization dimensions of x_norm to ensure that the final output tensor has dim() = 4
-        x_norm = torch.zeros(B, D, self.image_size, self.image_size, device=x.device)
-        for i in range(D):
-            channel = x_resize[:, i : i + 1]
-            channel = self.normalize_minmax(channel)
-            x_norm[:, i] = channel[:, 0]
-
-        # CHANGE：Multivariate Average Pooling
-        if self.compress_vars:
-            x_combined = torch.mean(x_norm, dim=1, keepdim=True)
-        else:
-            x_combined = x_norm
+        # Vectorized Normalization per image
+        x_norm = self.normalize_per_image(x_resize)
+        x_combined = x_norm
 
         grid_size = self.image_size // 8
         grid_mask = torch.ones_like(x_combined)
@@ -141,21 +170,21 @@ class MT2VEncoder(nn.Module):
     def gramian_angular_field(self, x):
         B, L, D = x.shape
 
-        x_norm = self.normalize_minmax(x) * 2 - 1
+        # Normalize per series (instance normalization)
+        x_norm = self.normalize_per_series(x) * 2 - 1
         theta = torch.arccos(x_norm.clamp(-1 + 1e-6, 1 - 1e-6))
-        gaf = torch.zeros(B, D, L, L, device=x.device)
 
-        for b in range(B):
-            for d in range(D):
-                angle_i = theta[b, :, d].unsqueeze(1)
-                angle_j = theta[b, :, d].unsqueeze(0)
+        # Vectorized GAF
+        angle_i = theta.unsqueeze(2)  # (B, L, 1, D)
+        angle_j = theta.unsqueeze(1)  # (B, 1, L, D)
 
-                if self.gaf_method == "summation":
-                    gaf_matrix = torch.cos(angle_i + angle_j)
-                else:
-                    gaf_matrix = torch.sin(angle_i - angle_j)
+        if self.gaf_method == "summation":
+            gaf_matrix = torch.cos(angle_i + angle_j)
+        else:
+            gaf_matrix = torch.cos(angle_i - angle_j)
 
-                gaf[b, d] = self.normalize_minmax(gaf_matrix)
+        # gaf_matrix: (B, L, L, D) -> (B, D, L, L)
+        gaf = gaf_matrix.permute(0, 3, 1, 2)
 
         # CHANGE：Multivariate Average Pooling
         if self.compress_vars:
@@ -168,34 +197,41 @@ class MT2VEncoder(nn.Module):
             align_corners=False,
         )
 
+        # Normalize result to [0, 1] per image (After interpolation to preserve contrast)
+        gaf = self.normalize_per_image(gaf)
+
         return gaf
 
     # CHANGE: Univariate Recurrence Plot
     def recurrence_plot_u(self, x):
         B, L, D = x.shape
 
-        # Pre-allocate output: (B, D, L, L)
-        rp = torch.zeros(B, D, L, L, device=x.device)
+        # Vectorized RP
+        # x: (B, L, D) -> (B, L, 1, D) and (B, 1, L, D)
+        s_i = x.unsqueeze(2)
+        s_j = x.unsqueeze(1)
+        distances = torch.abs(s_i - s_j)  # (B, L, L, D)
 
-        for b in range(B):
-            for d in range(D):
-                series = x[b, :, d]  # (L,)
-                # Reshape to (L, 1) for broadcasting
-                s_i = series.unsqueeze(1)  # (L, 1)
-                s_j = series.unsqueeze(0)  # (1, L)
-                distances = torch.abs(s_i - s_j)  # (L, L), 1D distance
+        # Move D to dim 1 -> (B, D, L, L)
+        distances = distances.permute(0, 3, 1, 2)
 
-                if self.rp_threshold == "point":
-                    threshold = torch.quantile(distances, self.rp_percentage / 100.0)
-                    binary_matrix = (distances <= threshold).float()
-                elif self.rp_threshold == "distance":
-                    threshold = self.rp_percentage / 100.0
-                    binary_matrix = (distances <= threshold).float()
-                else:  # 'fan' or Gaussian
-                    sigma = torch.std(distances)
-                    binary_matrix = torch.exp(-(distances**2) / (2 * sigma**2))
+        if self.rp_threshold == "point":
+            # quantile over last two dims
+            flat_dist = distances.reshape(B, D, -1)
+            threshold = torch.quantile(
+                flat_dist, self.rp_percentage / 100.0, dim=2, keepdim=True
+            )
+            threshold = threshold.unsqueeze(3)  # (B, D, 1, 1)
 
-                rp[b, d] = binary_matrix
+            # Use Sigmoid for soft thresholding to enable gradient flow
+            rp = torch.sigmoid(10.0 * (threshold - distances))
+        elif self.rp_threshold == "distance":
+            threshold = self.rp_percentage / 100.0
+            rp = torch.sigmoid(10.0 * (threshold - distances))
+        else:  # 'fan' or Gaussian
+            flat_dist = distances.reshape(B, D, -1)
+            sigma = torch.std(flat_dist, dim=2, keepdim=True).unsqueeze(3)
+            rp = torch.exp(-(distances**2) / (2 * sigma**2 + 1e-8))
 
         # Now interpolate each channel independently
         rp_resized = F.interpolate(
@@ -210,26 +246,32 @@ class MT2VEncoder(nn.Module):
     # CHANGE：Multivariate Recurrence Plot
     def recurrence_plot_m(self, x):
         B, L, D = x.shape
-        rp = torch.zeros(B, 1, L, L, device=x.device)
 
-        for b in range(B):
-            x_b = x[b]
-            x_i = x_b.unsqueeze(1)
-            x_j = x_b.unsqueeze(0)
+        # Normalize first to ensure variables contribute equally
+        x_norm = self.normalize_per_series(x)
 
-            distances = torch.norm(x_i - x_j, dim=2)
+        x_i = x_norm.unsqueeze(2)  # (B, L, 1, D)
+        x_j = x_norm.unsqueeze(1)  # (B, 1, L, D)
 
-            if self.rp_threshold == "point":
-                threshold = torch.quantile(distances, self.rp_percentage / 100.0)
-                binary_matrix = (distances <= threshold).float()
-                rp[b, 0] = binary_matrix
-            elif self.rp_threshold == "distance":
-                threshold = self.rp_percentage / 100.0
-                binary_matrix = (distances <= threshold).float()
-                rp[b, 0] = binary_matrix
-            else:
-                sigma = torch.std(distances)
-                rp[b, 0] = torch.exp(-(distances**2) / (2 * sigma**2))
+        # Euclidean distance in phase space (D dimensions)
+        distances = torch.norm(x_i - x_j, dim=3)  # (B, L, L)
+
+        # distances is (B, L, L). We want output (B, 1, L, L)
+        distances = distances.unsqueeze(1)  # (B, 1, L, L)
+
+        if self.rp_threshold == "point":
+            flat_dist = distances.reshape(B, 1, -1)
+            threshold = torch.quantile(
+                flat_dist, self.rp_percentage / 100.0, dim=2, keepdim=True
+            ).unsqueeze(3)
+            rp = torch.sigmoid(10.0 * (threshold - distances))
+        elif self.rp_threshold == "distance":
+            threshold = self.rp_percentage / 100.0
+            rp = torch.sigmoid(10.0 * (threshold - distances))
+        else:
+            flat_dist = distances.reshape(B, 1, -1)
+            sigma = torch.std(flat_dist, dim=2, keepdim=True).unsqueeze(3)
+            rp = torch.exp(-(distances**2) / (2 * sigma**2 + 1e-8))
 
         rp = F.interpolate(
             rp,
@@ -255,43 +297,35 @@ class MT2VEncoder(nn.Module):
         win_length = n_fft
         window = torch.hann_window(win_length, device=x.device)
 
-        # CHANGE: No longer precompute n_time_bins
-        # n_freq_bins = n_fft // 2 + 1
-        # n_time_bins = max(1, (L - win_length) // hop_length + 1)
-        # spectrograms = torch.zeros(B, D, n_freq_bins, n_time_bins, device=x.device)
+        # Vectorized STFT
+        # Reshape to (B*D, L)
+        x_flat = x.permute(0, 2, 1).reshape(B * D, L)
 
-        spectrogram_list = []
-        for b in range(B):
-            channel_specs = []
-            for d in range(D):
-                ts = x[b, :, d]
-                ts = (ts - ts.mean()) / (ts.std() + 1e-10)
-                stft_result = torch.stft(
-                    ts,
-                    n_fft=n_fft,
-                    hop_length=hop_length,
-                    win_length=win_length,
-                    window=window,
-                    return_complex=True,
-                    pad_mode="reflect",  # 自动 padding
-                )
-                magnitude = torch.abs(stft_result)  # shape: [n_freq, n_time_actual]
-                if self.use_log_scale:
-                    magnitude = torch.log1p(magnitude * 10)
+        # Z-score normalization per series
+        x_norm = self.standardize_per_series(x_flat)
 
-                # spectrograms[b, d] = self.normalize_minmax(magnitude)
-                magnitude = self.normalize_minmax(magnitude)
-                channel_specs.append(magnitude)
-            # Stack channels: [D, F, T]
-            channel_specs = torch.stack(channel_specs, dim=0)
-            spectrogram_list.append(channel_specs)
+        stft_result = torch.stft(
+            x_norm,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            win_length=win_length,
+            window=window,
+            return_complex=True,
+            pad_mode="reflect",
+        )
+        magnitude = torch.abs(stft_result)  # (B*D, F, T)
 
-        # Final shape: [B, D, F, T_actual]
-        spectrograms = torch.stack(spectrogram_list, dim=0)
+        if self.use_log_scale:
+            magnitude = torch.log1p(magnitude * 10)
+
+        # Reshape back: (B, D, F, T)
+        magnitude = magnitude.reshape(B, D, magnitude.size(1), magnitude.size(2))
 
         # CHANGE：Multivariate Average Pooling
         if self.compress_vars:
-            spectrograms = spectrograms.mean(dim=1, keepdim=True)
+            spectrograms = magnitude.mean(dim=1, keepdim=True)
+        else:
+            spectrograms = magnitude
 
         spectrograms = F.interpolate(
             spectrograms,
@@ -299,6 +333,9 @@ class MT2VEncoder(nn.Module):
             mode="bilinear",
             align_corners=False,
         )
+
+        # Normalize per image (After interpolation)
+        spectrograms = self.normalize_per_image(spectrograms)
 
         spectrograms = torch.flip(spectrograms, [2])
 
@@ -384,45 +421,165 @@ class MT2VEncoder(nn.Module):
             align_corners=False,
         )
 
-        scalograms = torch.clamp(scalograms, 0.05, 1.0)
+        scalograms = self.normalize_per_image(scalograms)
 
         return scalograms
 
     # CHANGE：GPU优化版本
     def wavelet_transform_gpu(self, x):
         B, L, D = x.shape
-        S = 32
+        S = 32  # Number of scales (frequencies)
+
+        # 1. Generate Scales (Log-spaced)
+        # Scales correspond to 1/frequency. We range from small scale (high freq) to large scale (low freq).
         end_exp = torch.log10(torch.tensor(L / 2.0, device=x.device))
         scales = torch.logspace(0, float(end_exp.item()), S, base=10, device=x.device)
-        t = torch.arange(L, device=x.device).unsqueeze(0)
-        center = L / 2.0
+
+        # 2. Construct Morlet Wavelet Bank in Frequency Domain
+        # t: Time points [0, 1, ..., L-1]
+        t = torch.arange(L, device=x.device).unsqueeze(0)  # (1, L)
+        center = L / 2.0  # Center the wavelet in the time window
+
+        # Morlet Wavelet formula: psi(t) = sin(2*pi*t/s) * exp(-(t-center)^2 / (2*s^2))
+        # scales.unsqueeze(1) -> (S, 1) to broadcast over time
         sin_term = torch.sin(2 * torch.pi * (t / scales.unsqueeze(1)))
         gauss = torch.exp(-((t - center) ** 2) / (2 * (scales.unsqueeze(1) ** 2)))
-        wavelets = sin_term * gauss
+        wavelets = sin_term * gauss  # (S, L)
+
+        # Normalize wavelets to have unit energy
         wavelets = wavelets / (torch.linalg.norm(wavelets, dim=1, keepdim=True) + 1e-8)
+
+        # 3. Frequency Domain Convolution (Theorem: Conv(x, w) <=> IFFT(FFT(x) * FFT(w)))
+        # Reshape x to (B*D, L) for batch processing
         x_bd = x.permute(0, 2, 1).reshape(B * D, L)
-        Xf = torch.fft.rfft(x_bd, dim=-1)
-        Wf = torch.fft.rfft(wavelets, dim=-1)
+
+        # FFT of input signal
+        Xf = torch.fft.rfft(x_bd, dim=-1)  # (B*D, L//2 + 1)
+        # FFT of wavelet bank
+        Wf = torch.fft.rfft(wavelets, dim=-1)  # (S, L//2 + 1)
+
+        # Broadcasting multiply: (B*D, 1, F) * (1, S, F) -> (B*D, S, F)
         Yf = Xf.unsqueeze(1) * Wf.unsqueeze(0)
-        coeff = torch.fft.irfft(Yf, n=L, dim=-1)
+
+        # Inverse FFT to get CWT coefficients
+        coeff = torch.fft.irfft(Yf, n=L, dim=-1)  # (B*D, S, L)
+
+        # Reshape back to (B, D, S, L)
         coeff = coeff.reshape(B, D, S, L)
+
+        # 4. Post-processing (Magnitude & Log-scale)
         if self.use_log_scale:
             coeff = torch.log1p(torch.abs(coeff))
         else:
             coeff = torch.abs(coeff)
-        mn = coeff.amin(dim=(-2, -1), keepdim=True)
-        mx = coeff.amax(dim=(-2, -1), keepdim=True)
-        coeff = (coeff - mn) / (mx - mn + 1e-8)
-        coeff = 0.2 + 0.8 * coeff
+
+        # 5. Normalization
+        # Normalize per image (S, L) dimensions
+        # mn = coeff.amin(dim=(-2, -1), keepdim=True)
+        # mx = coeff.amax(dim=(-2, -1), keepdim=True)
+        # coeff = (coeff - mn) / (mx - mn + 1e-8)
+
+        # Contrast adjustment and clamping
+        # coeff = 0.2 + 0.8 * coeff
+
+        # CHANGE：Multivariate Average Pooling
         if self.compress_vars:
             coeff = coeff.mean(dim=1, keepdim=True)
+
+        # 6. Interpolate to target image size
         coeff = F.interpolate(
             coeff,
             size=(self.image_size, self.image_size),
             mode="bilinear",
             align_corners=False,
         )
-        coeff = torch.clamp(coeff, 0.05, 1.0)
+        # coeff = torch.clamp(coeff, 0.05, 1.0)
+
+        # Normalize per image after interpolation
+        coeff = self.normalize_per_image(coeff)
+
+        return coeff
+
+    def cwt_spectrogram_real(self, x):
+        """
+        Continuous Wavelet Transform (CWT) using Real Wavelet (Mexican Hat / Ricker).
+        Unlike standard Spectrograms or Wavelet Magnitude, this method preserves
+        PHASE information (sign of the signal) by avoiding abs() and mapping
+        the real-valued coefficients directly to [0, 1].
+
+        Output mapping:
+        - Positive coefficients (Peaks) -> > 0.5 (Brighter)
+        - Zero coefficients (Silence)   -> 0.5 (Gray)
+        - Negative coefficients (Troughs)-> < 0.5 (Darker)
+        """
+        B, L, D = x.shape
+        S = 32  # Number of scales
+
+        # 1. Generate Scales
+        # Ricker wavelet is well defined for scales.
+        end_exp = torch.log10(torch.tensor(L / 2.0, device=x.device))
+        scales = torch.logspace(0, float(end_exp.item()), S, base=10, device=x.device)
+
+        # 2. Construct Ricker (Mexican Hat) Wavelet in Frequency Domain
+        # Ricker time domain: A * (1 - t^2/a^2) * exp(-t^2/2a^2)
+        # Ricker freq domain: A * (w^2 * a^2) * exp(-w^2 * a^2 / 2)
+        # It's computationally more stable to build in Time Domain and FFT
+
+        t = torch.arange(L, device=x.device).unsqueeze(0) - L / 2.0  # Center at 0
+        # t: (1, L), scales: (S) -> (S, L)
+        t_scaled = t / scales.unsqueeze(1)
+
+        # Ricker Wavelet Formula
+        # psi(t) = (1 - t^2) * exp(-t^2/2)
+        ricker = (1 - t_scaled**2) * torch.exp(-0.5 * t_scaled**2)
+
+        # Energy Normalization
+        ricker = ricker / (torch.linalg.norm(ricker, dim=1, keepdim=True) + 1e-8)
+
+        # 3. Frequency Domain Convolution
+        x_bd = x.permute(0, 2, 1).reshape(B * D, L)
+
+        Xf = torch.fft.rfft(x_bd, dim=-1)  # (B*D, L//2+1)
+        Wf = torch.fft.rfft(ricker, dim=-1)  # (S, L//2+1)
+
+        Yf = Xf.unsqueeze(1) * Wf.unsqueeze(0)  # (B*D, S, L//2+1)
+
+        # Inverse FFT -> Real values (Phase preserved)
+        coeff = torch.fft.irfft(Yf, n=L, dim=-1)  # (B*D, S, L)
+        coeff = coeff.reshape(B, D, S, L)
+
+        # 4. Phase-Preserving Normalization
+        # Instead of abs(), we map the signed range to [0, 1]
+        # We want 0 to be mapped to 0.5 to preserve "neutrality"
+
+        # Global scaling strategy to preserve relative amplitude across frequencies
+        # Find max absolute value per image to determine the range [-max, +max]
+        max_val = torch.abs(coeff).amax(dim=(-2, -1), keepdim=True)
+
+        # Map [-max, +max] -> [0, 1]
+        # x_norm = (x / max_val + 1) / 2
+        # -max -> (-1 + 1)/2 = 0
+        # 0    -> (0 + 1)/2 = 0.5
+        # +max -> (1 + 1)/2 = 1
+        coeff = (coeff / (max_val + 1e-8) + 1) / 2.0
+
+        # 5. Pooling & Interpolate
+        if self.compress_vars:
+            coeff = coeff.mean(dim=1, keepdim=True)
+
+        coeff = F.interpolate(
+            coeff,
+            size=(self.image_size, self.image_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        # Note: We do NOT use normalize_per_image again here,
+        # because we intentionally set the center (0) to 0.5.
+        # Standard Min-Max would shift the zero-point if the signal is not symmetric.
+        # But we clip to ensure safety.
+        coeff = torch.clamp(coeff, 0.0, 1.0)
+
         return coeff
 
     def mel_filterbank(self, x):
@@ -433,36 +590,28 @@ class MT2VEncoder(nn.Module):
         win_length = n_fft
         window = torch.hann_window(win_length, device=x.device)
         n_freq_bins = n_fft // 2 + 1
-        n_time_bins = max(1, (L - win_length) // hop_length + 1)
-        spectrograms = torch.zeros(B, D, n_freq_bins, n_time_bins, device=x.device)
 
-        for b in range(B):
-            for d in range(D):
-                ts = self.normalize_minmax(x[b, :, d])
-                stft_result = torch.stft(
-                    ts,
-                    n_fft=n_fft,
-                    hop_length=hop_length,
-                    win_length=win_length,
-                    window=window,
-                    return_complex=True,
-                    pad_mode="constant",
-                )
-                power_spec = torch.abs(stft_result) ** 2
-                if power_spec.shape != spectrograms[b, d].shape:
-                    power_spec = (
-                        F.interpolate(
-                            power_spec.unsqueeze(0).unsqueeze(0),
-                            size=spectrograms[b, d].shape,
-                            mode="bilinear",
-                            align_corners=False,
-                        )
-                        .squeeze(0)
-                        .squeeze(0)
-                    )
+        # 1. Vectorized STFT
+        x_flat = x.permute(0, 2, 1).reshape(B * D, L)
 
-                spectrograms[b, d] = power_spec
-        sample_rate = 1.0
+        # Z-score normalization per series (Standard for audio-like processing)
+        x_norm = self.standardize_per_series(x_flat)
+
+        stft_result = torch.stft(
+            x_norm,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            win_length=win_length,
+            window=window,
+            return_complex=True,
+            pad_mode="constant",
+        )
+        # Power Spectrogram: |STFT|^2
+        power_spec = torch.abs(stft_result) ** 2  # (B*D, n_freq, n_time)
+        n_time_bins = power_spec.shape[-1]
+
+        # 2. Create Mel Filter Bank
+        sample_rate = 1.0  # Normalized sample rate
         freqs = torch.fft.rfftfreq(n_fft, d=1.0 / sample_rate, device=x.device)
 
         if self.use_mel:
@@ -479,44 +628,33 @@ class MT2VEncoder(nn.Module):
                 f_right = freq_points[i + 2]
                 left_mask = (freqs >= f_left) & (freqs <= f_center)
                 right_mask = (freqs >= f_center) & (freqs <= f_right)
-                left_slope = (freqs[left_mask] - f_left) / (f_center - f_left)
-                right_slope = (f_right - freqs[right_mask]) / (f_right - f_center)
+                left_slope = (freqs[left_mask] - f_left) / (f_center - f_left + 1e-8)
+                right_slope = (f_right - freqs[right_mask]) / (
+                    f_right - f_center + 1e-8
+                )
                 filter_bank[i, left_mask] = left_slope
                 filter_bank[i, right_mask] = right_slope
         else:
+            # Gaussian filter bank
             bandwidth = freqs[-1] / self.num_filters
             filter_bank = torch.zeros(self.num_filters, n_freq_bins, device=x.device)
             for i in range(self.num_filters):
                 center = (i + 0.5) * bandwidth
                 filter_bank[i] = torch.exp(
-                    -0.5 * ((freqs - center) / (bandwidth / 2)) ** 2
+                    -0.5 * ((freqs - center) / (bandwidth / 2 + 1e-8)) ** 2
                 )
 
-        mel_spectrograms = torch.zeros(
-            B, D, self.num_filters, n_time_bins, device=x.device
-        )
-        for b in range(B):
-            for d in range(D):
-                try:
-                    mel_spectrograms[b, d] = torch.matmul(
-                        filter_bank, spectrograms[b, d]
-                    )
-                except RuntimeError as e:
-                    print(
-                        f"Dimension mismatch: {filter_bank.shape}, {spectrograms[b, d].shape}"
-                    )
-                    if filter_bank.shape[1] != spectrograms[b, d].shape[0]:
-                        resized_filter = F.interpolate(
-                            filter_bank.unsqueeze(0),
-                            size=(spectrograms[b, d].shape[0]),
-                            mode="linear",
-                            align_corners=False,
-                        ).squeeze(0)
-                        mel_spectrograms[b, d] = torch.matmul(
-                            resized_filter, spectrograms[b, d]
-                        )
+        # 3. Apply Mel Filter Bank
+        # filter_bank: (n_mels, n_freq)
+        # power_spec: (B*D, n_freq, n_time)
+        # result: (B*D, n_mels, n_time)
+        mel_spectrograms = torch.matmul(filter_bank, power_spec)
+
+        # 4. Log Scale (dB)
         mel_spectrograms = 10 * torch.log10(mel_spectrograms + 1e-6)
-        mel_spectrograms = self.normalize_minmax(mel_spectrograms)
+
+        # 5. Reshape back and Normalize
+        mel_spectrograms = mel_spectrograms.reshape(B, D, self.num_filters, n_time_bins)
 
         # CHANGE：Multivariate Average Pooling
         if self.compress_vars:
@@ -529,69 +667,163 @@ class MT2VEncoder(nn.Module):
             align_corners=False,
         )
 
+        # Normalize per image after interpolation
+        mel_spectrograms = self.normalize_per_image(mel_spectrograms)
+
         return mel_spectrograms
+
+    def s_transform(self, x):
+        """
+        Stockwell Transform (S-Transform) implementation on GPU.
+        S-Transform provides frequency-dependent resolution (multi-resolution),
+        similar to Wavelet Transform but directly linked to Fourier spectrum (preserves phase).
+
+        S(tau, f) = IFFT( X(v) * W(v-f) )
+        where W(v) is a Gaussian window with width proportional to f.
+        """
+        B, L, D = x.shape
+
+        # 1. Prepare Data & FFT
+        x_flat = x.permute(0, 2, 1).reshape(B * D, L)
+        # Standardize to ensure consistent spectral magnitude
+        x_norm = self.standardize_per_series(x_flat)
+
+        # Compute Full FFT
+        Xf = torch.fft.fft(x_norm, dim=-1)  # (B*D, L)
+
+        # 2. Define Frequencies
+        # FFT frequencies indices: [0, 1, ..., L/2, -L/2, ..., -1]
+        # We construct a vector 'k' representing the frequency indices
+        if L % 2 == 0:
+            k = torch.cat(
+                [
+                    torch.arange(L // 2, device=x.device),
+                    torch.arange(-L // 2, 0, device=x.device),
+                ]
+            ).float()
+        else:
+            k = torch.cat(
+                [
+                    torch.arange((L - 1) // 2 + 1, device=x.device),
+                    torch.arange(-(L - 1) // 2, 0, device=x.device),
+                ]
+            ).float()
+
+        # Target frequencies 'f' to analyze
+        # We analyze positive frequencies from 1 to L//2
+        # (ignoring DC component and negative frequencies for the "image")
+        max_f = L // 2
+        f = torch.arange(1, max_f + 1, device=x.device).float().unsqueeze(1)  # (F, 1)
+
+        # 3. Construct Gaussian Windows Matrix
+        # Window function: G(k, f) = exp( -2 * pi^2 * (k - f)^2 / f^2 )
+        # k: (1, L)
+        # f: (F, 1)
+        # Broadcasting -> (F, L)
+
+        # Note: We need to handle the circular frequency distance for correct windowing?
+        # In standard S-transform, it's linear frequency.
+        # But since we use DFT, the window should ideally wrap around.
+        # However, for meaningful f (>=1) and large L, the Gaussian is narrow enough
+        # that wrapping is negligible, except maybe for very highest frequencies.
+        # We'll use direct difference.
+
+        exponent = -2 * (torch.pi**2) * (k.unsqueeze(0) - f) ** 2 / (f**2)
+        mask = torch.exp(exponent)  # (F, L)
+
+        # 4. Apply Windows and IFFT
+        # Xf: (B*D, L) -> (B*D, 1, L)
+        # mask: (F, L) -> (1, F, L)
+        Y = Xf.unsqueeze(1) * mask.unsqueeze(0)  # (B*D, F, L)
+
+        # IFFT along the last dimension to get time domain complex S-series
+        S_complex = torch.fft.ifft(Y, dim=-1)  # (B*D, F, L)
+
+        # 5. Magnitude
+        # We use magnitude for visualization
+        S_mag = torch.abs(S_complex)
+
+        # 6. Reshape and Post-process
+        # Reshape back to (B, D, F, L)
+        S_mag = S_mag.reshape(B, D, S_mag.shape[1], L)
+
+        # Compress Variables if needed
+        if self.compress_vars:
+            S_mag = S_mag.mean(dim=1, keepdim=True)
+
+        # Interpolate to target image size
+        # Input (B, D, F, L), Output (B, D, H, W)
+        S_img = F.interpolate(
+            S_mag,
+            size=(self.image_size, self.image_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        # Flip Y axis (to have low freq at bottom)
+        S_img = torch.flip(S_img, [2])
+
+        # Normalize per image
+        S_img = self.normalize_per_image(S_img)
+
+        return S_img
 
     def markov_transition_field(self, x, n_bins=8):
         B, L, D = x.shape
-        mtf = torch.zeros(B, D, L, L, device=x.device)
+
+        # 1. Normalization
+        x_norm = self.normalize_per_series(x)
+
+        # 2. Downsampling
         downsample_factor = 1
         if L > self.mtf_downsample_threshold and self.use_fast_mode:
             downsample_factor = L // self.mtf_downsample_threshold + 1
-            effective_L = L // downsample_factor
+            x_norm = x_norm[:, ::downsample_factor, :]
+            effective_L = x_norm.size(1)
             print(
                 f"Downsampling time series from {L} to {effective_L} for MTF calculation"
             )
         else:
             effective_L = L
 
-        for b in range(B):
-            for d in range(D):
-                ts = self.normalize_minmax(x[b, :, d])
+        # 3. Binning (Soft)
+        bins = torch.linspace(0, 1, n_bins + 1, device=x.device)
+        bin_centers = (bins[:-1] + bins[1:]) / 2  # (n_bins,)
 
-                if downsample_factor > 1:
-                    ts = ts[::downsample_factor]
-                    curr_L = len(ts)
-                else:
-                    curr_L = L
+        # x_norm: (B, L_eff, D)
+        # bin_centers: (n_bins,)
+        # dists: (B, L_eff, D, n_bins)
+        dists = torch.abs(x_norm.unsqueeze(-1) - bin_centers)
+        soft_digitized = F.softmax(-10.0 * dists, dim=-1)  # (B, L_eff, D, n_bins)
 
-                bins = torch.linspace(0, 1, n_bins + 1, device=x.device)
-                digitized = torch.zeros(curr_L, dtype=torch.long, device=x.device)
+        # 4. Transitions
+        # prob_t: (B, L_eff-1, D, n_bins)
+        prob_t = soft_digitized[:, :-1, :, :]
+        prob_t_plus_1 = soft_digitized[:, 1:, :, :]
 
-                for i in range(n_bins):
-                    if i < n_bins - 1:
-                        mask = (ts >= bins[i]) & (ts < bins[i + 1])
-                    else:
-                        mask = ts >= bins[i]
-                    digitized[mask] = i
+        # transitions: (B, D, n_bins, n_bins)
+        # Sum over time (dim 1)
+        transitions = torch.einsum("btki,btkj->bkij", prob_t, prob_t_plus_1)
 
-                transitions = torch.zeros(n_bins, n_bins, device=x.device)
+        # Normalize transitions
+        row_sums = transitions.sum(dim=-1, keepdim=True)
+        row_sums[row_sums == 0] = 1
+        transitions = transitions / row_sums
 
-                for i in range(curr_L - 1):
-                    transitions[digitized[i], digitized[i + 1]] += 1
+        # 5. MTF Matrix
+        # soft_digitized: (B, L_eff, D, n_bins) -> permute to (B, D, L_eff, n_bins)
+        Q = soft_digitized.permute(0, 2, 1, 3)
 
-                row_sums = transitions.sum(dim=1, keepdim=True)
-                row_sums[row_sums == 0] = 1
-                transitions = transitions / row_sums
+        # P_projected = Q @ transitions
+        # (B, D, L_eff, n_bins) @ (B, D, n_bins, n_bins) -> (B, D, L_eff, n_bins)
+        P_projected = torch.matmul(Q, transitions)
 
-                i_indices = digitized.unsqueeze(1).expand(curr_L, curr_L)
-                j_indices = digitized.unsqueeze(0).expand(curr_L, curr_L)
+        # mtf_small = P_projected @ Q.T
+        # (B, D, L_eff, n_bins) @ (B, D, n_bins, L_eff) -> (B, D, L_eff, L_eff)
+        mtf_small = torch.matmul(P_projected, Q.transpose(-1, -2))
 
-                mtf_small = transitions[i_indices, j_indices]
+        mtf = mtf_small
 
-                if downsample_factor > 1:
-                    mtf_resized = (
-                        F.interpolate(
-                            mtf_small.unsqueeze(0).unsqueeze(0),
-                            size=(L, L),
-                            mode="bilinear",
-                            align_corners=False,
-                        )
-                        .squeeze(0)
-                        .squeeze(0)
-                    )
-                    mtf[b, d] = mtf_resized
-                else:
-                    mtf[b, d] = mtf_small
         # CHANGE：Multivariate Average Pooling
         if self.compress_vars:
             mtf = mtf.mean(dim=1, keepdim=True)
@@ -605,19 +837,282 @@ class MT2VEncoder(nn.Module):
 
         return mtf
 
-    # 通过FFT识别周期
-    def FFT_for_Period(self, x, k=2):
-        # [B, T, C]
-        xf = torch.fft.rfft(x, dim=1)
-        # find period by amplitudes
-        frequency_list = abs(xf).mean(0).mean(-1)
-        frequency_list[0] = 0
-        _, top_list = torch.topk(frequency_list, k)
-        top_list = top_list.detach().cpu().numpy()
-        period = x.shape[1] // top_list
+    # 通过自相关识别周期
+    def Autocorrelation_for_Period(self, x):
+        B, L, D = x.shape
+        x_flat = x.permute(0, 2, 1).reshape(B * D, L)
+        x_flat = x_flat - x_flat.mean(dim=1, keepdim=True)
 
-        # 周期和对应的频率振幅
-        return period, abs(xf).mean(-1)[:, top_list]
+        # FFT padding
+        n_fft = 2 * 2 ** int(np.ceil(np.log2(L)))
+        f = torch.fft.rfft(x_flat, n=n_fft, dim=1)
+        acf = torch.fft.irfft(f * torch.conj(f), n=n_fft, dim=1)[:, :L]
+
+        # Average ACF across all samples
+        mean_acf = acf.mean(dim=0)  # (L,)
+
+        # Mask lag 0 and very small lags (to avoid trivial peaks)
+        mean_acf[0:4] = -float("inf")
+
+        # Find peak
+        period = torch.argmax(mean_acf).item()
+        return period
+
+    def hilbert_curve_d2xy(self, n, d):
+        """
+        Convert 1D index d to 2D Hilbert curve coordinates (x, y).
+        n: order of the curve (image size will be 2^n x 2^n)
+        d: 1D index
+        """
+        x, y = 0, 0
+        s = 1
+        while s < (1 << n):
+            rx = 1 & (d // 2)
+            ry = 1 & (d ^ rx)
+
+            if ry == 0:
+                if rx == 1:
+                    x, y = s - 1 - x, s - 1 - y
+                x, y = y, x
+
+            x += s * rx
+            y += s * ry
+            d //= 4
+            s *= 2
+        return x, y
+
+    def get_hilbert_indices(self, side_length, device):
+        """
+        Generate and cache Hilbert curve indices.
+        """
+        cache_key = side_length
+        if cache_key in self.hilbert_curve_cache:
+            return self.hilbert_curve_cache[cache_key].to(device)
+
+        # Calculate order n
+        # side_length must be power of 2 for standard Hilbert curve
+        # If not, we find the next power of 2 that covers the image,
+        # but here we assume user wants the exact side_length.
+        # However, Hilbert curve is strictly defined for 2^n.
+        # We will use the largest 2^n <= side_length or force side_length to be 2^n.
+        # For simplicity and correctness, we assume side_length is a power of 2,
+        # or we pad/crop. Let's enforce 2^n internally for the curve generation.
+
+        n = int(np.ceil(np.log2(side_length)))
+        # We need to cover the whole image.
+
+        # Actually, let's just generate for the exact target size if it is a power of 2.
+        # If not, we might need a more complex space filling curve or just resize later.
+        # For this implementation, we generate for 2^n >= side_length, then crop/resize.
+
+        curve_side = 2**n
+        num_points = curve_side * curve_side
+
+        indices = torch.zeros((num_points, 2), dtype=torch.long)
+
+        # This loop is slow in Python, but only runs once per size
+        # Optimization: Could be pre-computed or JIT compiled if critical
+        for d in range(num_points):
+            x, y = self.hilbert_curve_d2xy(n, d)
+            indices[d, 0] = x
+            indices[d, 1] = y
+
+        self.hilbert_curve_cache[cache_key] = indices
+        return indices.to(device)
+
+    def hilbert_curve_mapping(self, x):
+        B, L, D = x.shape
+
+        # 1. Determine target size based on image_size
+        # Ideally image_size should be a power of 2.
+        target_side = self.image_size
+        n = int(np.ceil(np.log2(target_side)))
+        curve_side = 2**n
+        target_len = curve_side * curve_side
+
+        # 2. Resize time series to match the curve length
+        # x: (B, L, D) -> (B, D, L)
+        x_perm = x.permute(0, 2, 1)
+
+        if L != target_len:
+            x_resized = F.interpolate(
+                x_perm, size=target_len, mode="linear", align_corners=True
+            )  # (B, D, target_len)
+        else:
+            x_resized = x_perm
+
+        # 3. Get mapping indices
+        indices = self.get_hilbert_indices(curve_side, x.device)  # (N, 2)
+
+        # 4. Fill the image
+        # Create canvas: (B, D, H, W)
+        canvas = torch.zeros(B, D, curve_side, curve_side, device=x.device)
+
+        # x_indices and y_indices
+        x_idx = indices[:, 0]
+        y_idx = indices[:, 1]
+
+        # Scatter values
+        # x_resized: (B, D, N)
+        # We assign x_resized[..., i] to canvas[..., y_idx[i], x_idx[i]]
+
+        canvas[:, :, y_idx, x_idx] = x_resized
+
+        # 5. Resize to exact image_size if needed (if image_size was not power of 2)
+        if curve_side != self.image_size:
+            canvas = F.interpolate(
+                canvas,
+                size=(self.image_size, self.image_size),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        # 6. Normalize per image
+        canvas = self.normalize_per_image(canvas)
+
+        # 7. Compress vars if needed
+        if self.compress_vars:
+            canvas = canvas.mean(dim=1, keepdim=True)
+
+        return canvas
+
+    def plot_mapping(self, x):
+        """
+        Maps time series to a 2D image where x-axis is time and y-axis is value.
+        Uses soft rendering (Gaussian) for differentiability.
+        """
+        B, L, D = x.shape
+        H, W = self.image_size, self.image_size
+
+        # 1. Normalize x to [0, H-1] range
+        # Use min-max normalization per series to fit in the image height
+        x_norm = self.normalize_per_series(x)  # (B, L, D) in [0, 1]
+        x_scaled = x_norm * (H - 1)
+
+        # 2. Resize to W (Time axis)
+        # Permute to (B, D, L) for interpolate
+        x_perm = x_scaled.permute(0, 2, 1)
+        # Linear interpolation to match image width
+        x_resized = F.interpolate(
+            x_perm, size=W, mode="linear", align_corners=True
+        )  # (B, D, W)
+
+        # 3. Create Grid
+        # y_grid: (1, 1, H, 1) -> Represents coordinate of each pixel row
+        y_grid = torch.arange(H, device=x.device, dtype=x.dtype).view(1, 1, H, 1)
+
+        # x_resized: (B, D, 1, W) -> Represents the target coordinate for each column
+        y_centers = x_resized.unsqueeze(2)
+
+        # 4. Gaussian Soft Rendering
+        # Sigma controls the "thickness".
+        sigma = max(0.5, self.plot_line_thickness / 2.0)
+
+        # Expand for broadcasting: (B, D, H, W)
+        # Distance squared from the center line
+        y_centers_expanded = y_centers.expand(-1, -1, H, -1)
+
+        dist_sq = (y_grid - y_centers_expanded) ** 2
+
+        # Intensity = exp(-dist / 2sigma^2)
+        # This creates a soft band around the target value
+        intensity = torch.exp(-dist_sq / (2 * sigma**2))
+
+        # Result is already (B, D, H, W)
+        return intensity
+
+    def heat_mapping(self, x):
+        """
+        Maps time series to a 2D heatmap where x-axis is time and y-axis is value.
+        The value at time t determines the intensity of the entire column t.
+        """
+        B, L, D = x.shape
+        H, W = self.image_size, self.image_size
+
+        # 1. Normalize x to [0, 1] range for intensity
+        x_norm = self.normalize_per_series(x)  # (B, L, D) in [0, 1]
+
+        # 2. Resize to W (Time axis)
+        # Permute to (B, D, L) for interpolate
+        x_perm = x_norm.permute(0, 2, 1)
+        # Linear interpolation to match image width
+        x_resized = F.interpolate(
+            x_perm, size=W, mode="linear", align_corners=True
+        )  # (B, D, W)
+
+        # 3. Broadcast to H (Y axis)
+        # Expand to (B, D, H, W)
+        image = x_resized.unsqueeze(2).expand(-1, -1, H, -1)
+
+        return image
+
+    def smooth_mapping(self, x):
+        """
+        Maps time series to a 2D image where x-axis is time and y-axis is smoothing granularity.
+        Bottom (y=H-1) is window size 1 (raw). Top (y=0) is max window size.
+        """
+        B, L, D = x.shape
+        H, W = self.image_size, self.image_size
+
+        # 1. Normalize x to [0, 1] range
+        x_norm = self.normalize_per_series(x)  # (B, L, D)
+
+        # 2. Resize to W (Time axis)
+        x_perm = x_norm.permute(0, 2, 1)  # (B, D, L)
+        x_resized = F.interpolate(
+            x_perm, size=W, mode="linear", align_corners=True
+        )  # (B, D, W)
+
+        # 3. Construct Convolution Kernels for Moving Average
+        # Max window size is roughly W/4. Ensure it's odd for symmetric padding.
+        # Ensure at least size 3 to have some smoothing effect at the top.
+        target_max = max(3, W // 4)
+        K_max = target_max if target_max % 2 == 1 else target_max - 1
+
+        # Initialize weights: (H, 1, K_max)
+        weights = torch.zeros(H, 1, K_max, device=x.device, dtype=x.dtype)
+
+        # Generate window sizes for each row h
+        # h=0 (Top) -> K_max
+        # h=H-1 (Bottom) -> 1
+        for h in range(H):
+            # Linearly interpolate window size
+            # h goes 0 -> H-1.
+            # We want k to go K_max -> 1.
+            # k = 1 + (K_max - 1) * (H - 1 - h) / (H - 1)
+
+            progress = (H - 1 - h) / (H - 1)  # 1.0 at h=0, 0.0 at h=H-1
+            k_float = 1 + (K_max - 1) * progress
+            k = int(round(k_float))
+
+            # Ensure k is odd
+            if k % 2 == 0:
+                k += 1
+            # Clamp k to be at most K_max
+            k = min(k, K_max)
+
+            # Create average kernel
+            start = (K_max - k) // 2
+            weights[h, 0, start : start + k] = 1.0 / k
+
+        # 4. Apply Convolution
+        # If D > 1, we need to repeat weights for grouped convolution
+        # Input: (B, D, W)
+        # Weights: (D*H, 1, K_max)
+        # Groups: D
+        if D > 1:
+            weights = weights.repeat(D, 1, 1)
+
+        # Padding 'same': pad = K_max // 2
+        padding = K_max // 2
+
+        # Output: (B, D*H, W)
+        output = F.conv1d(x_resized, weights, padding=padding, groups=D)
+
+        # 5. Reshape to (B, D, H, W)
+        output = output.view(B, D, H, W)
+
+        return output
 
     @torch.no_grad()
     def save_images(self, images, method, batch_idx):
@@ -641,107 +1136,27 @@ class MT2VEncoder(nn.Module):
                 img = Image.fromarray(other_img, mode="L")
             img.save(os.path.join(save_dir, f"image_{method}_{batch_idx}_{i}.png"))
 
-    # def forward(self, x, method="seg", save_images=False):
-    #     B, L, D = x.shape
-    #     start_time = time.time()
-    #     try:
-    #         if method == "seg":
-    #             output = self.segmentation(x)
-    #         elif method == "gaf":
-    #             output = self.gramian_angular_field(x)
-    #         elif method == "rp":
-    #             output = self.recurrence_plot(x)
-    #         elif method == "stft":
-    #             output = self.stft_spectrogram(x)
-    #         elif method == "wavelet":
-    #             output = self.wavelet_transform(x)
-    #         elif method == "mel":
-    #             output = self.mel_filterbank(x)
-    #         elif method == "mtf":
-    #             output = self.markov_transition_field(x)
-    #         else:
-    #             raise ValueError(
-    #                 f"Unknown method: {method}. Choose from 'seg', 'gaf', 'rp', 'stft', 'wavelet', 'mel', 'mtf'"
-    #             )
+    def forward(self, x):
+        # x: (B, L, D)
+        # return: list of (B, C, H, W) tensors for each method in ts2img_methods
 
-    #         if (
-    #             output.dim() != 4
-    #             or output.size(1) != 1
-    #             or output.size(2) != self.image_size
-    #             or output.size(3) != self.image_size
-    #         ):
-    #             if output.dim() == 2:
-    #                 output = output.unsqueeze(1).unsqueeze(1)
-    #             elif output.dim() == 3:
-    #                 if output.size(1) == output.size(2):
-    #                     output = output.unsqueeze(1)
-    #                 else:
-    #                     output = output.unsqueeze(2)
-    #             output = F.interpolate(
-    #                 output,
-    #                 size=(self.image_size, self.image_size),
-    #                 mode="bilinear",
-    #                 align_corners=False,
-    #             )
-    #             if output.size(1) != 1:
-    #                 output = output.mean(dim=1, keepdim=True)
-
-    #         exec_time = time.time() - start_time
-    #         if method not in self.method_times:
-    #             self.method_times[method] = []
-    #         self.method_times[method].append(exec_time)
-    #         output = self.norm(output)
-    #         if save_images:
-    #             self.save_images(output, method, B)
-    #         return output
-
-    #     except Exception as e:
-    #         print(f"Error in {method} method: {e}. Falling back to segmentation.")
-    #         output = self.segmentation(x)
-    #         output = self.norm(output)
-    #         return output
-
-    # CHANGE: 重构forward方法
-    # !!! 注意，目前这个方法倾向于批次样本的多变量时序数据使用
-    def forward(self, x, save_images=False):
-        ts2img_tensor_list = []
+        output_list = []
         for method in ts2img_methods:
-            ts2img_tensor = self.get_ts2img_tensor(x, method, save_images)
-            # print(f"[DEBUG]{method}-tensor shape: {ts2img_tensor.shape}")
+            img = self.get_ts2img_tensor(x, method)
+
+            # Post-processing: channel expansion
             if self.three_channel_image:
-                ts2img_tensor = ts2img_tensor.repeat(1, 3, 1, 1)
-            ts2img_tensor_list.append(ts2img_tensor)
-        return ts2img_tensor_list
+                if img.shape[1] == 1:
+                    img = img.repeat(1, 3, 1, 1)
+                elif img.shape[1] != 3:
+                    # Simple projection if needed, or just repeat/mean
+                    pass
 
-    def get_ts2img_tensor(self, x, method, save_images=False):
-        output = None
-        B, L, D = x.shape
-        if method == "seg":
-            output = self.segmentation(x)
-        elif method == "gaf":
-            output = self.gramian_angular_field(x)
-        elif method == "rp":
-            output = self.recurrence_plot(x)
-        elif method == "stft":
-            output = self.stft_spectrogram(x)
-        elif method == "wavelet":
-            output = self.wavelet_transform(x)
-        elif method == "mel":
-            output = self.mel_filterbank(x)
-        elif method == "mtf":
-            output = self.markov_transition_field(x)
-        else:
-            raise ValueError(
-                f"Unknown method: {method}. Choose from 'seg', 'gaf', 'rp', 'stft', 'wavelet', 'mel', 'mtf'"
-            )
-        if save_images:
-            self.save_images(output, method, B)
-        # compress_vars=True → B,1,H,W
-        # compress_vars=False → B,D,H,W
-        return output
+            output_list.append(img)
 
-    # CHANGE: 新增GPU加速的wavelet变换
-    def get_ts2img_tensor_opt(self, x, method, save_images=False):
+        return output_list
+
+    def get_ts2img_tensor(self, x, method):
         output = None
         B, L, D = x.shape
         if method == "seg":
@@ -754,18 +1169,26 @@ class MT2VEncoder(nn.Module):
             output = self.stft_spectrogram(x)
         elif method == "wavelet":
             output = self.wavelet_transform_gpu(x)
+        elif method == "cwt":
+            output = self.cwt_spectrogram_real(x)
         elif method == "mel":
             output = self.mel_filterbank(x)
         elif method == "mtf":
             output = self.markov_transition_field(x)
+        elif method == "st":
+            output = self.s_transform(x)
+        elif method == "hilbert":
+            output = self.hilbert_curve_mapping(x)
+        elif method == "plot":
+            output = self.plot_mapping(x)
+        elif method == "heat":
+            output = self.heat_mapping(x)
+        elif method == "smooth":
+            output = self.smooth_mapping(x)
         else:
             raise ValueError(
-                f"Unknown method: {method}. Choose from 'seg', 'gaf', 'rp', 'stft', 'wavelet', 'mel', 'mtf'"
+                f"Unknown method: {method}. Choose from 'seg', 'gaf', 'rp', 'stft', 'wavelet', 'mel', 'mtf', 'cwt', 'hilbert', 'plot', 'heat', 'smooth'"
             )
-        if save_images:
-            self.save_images(output, method, B)
-        # compress_vars=True → B,1,H,W
-        # compress_vars=False → B,D,H,W
         return output
 
     @staticmethod

@@ -2,7 +2,7 @@ export TOKENIZERS_PARALLELISM=false
 model_name=TimeSmart_top3
 
 vlm_type=clip
-gpu=0
+gpu=1
 image_size=224
 norm_const=0.4
 three_channel_image=True
@@ -87,10 +87,10 @@ run_experiment() {
 }
 
 # ETTh1, n_vars=7, periodicity=24
-run_experiment ETTh1 ETTh1 7 96 24 0.1 
-run_experiment ETTh1 ETTh1 7 192 24 0.1 
-run_experiment ETTh1 ETTh1 7 336 24 0.1 
-run_experiment ETTh1 ETTh1 7 720 24 0.1 
+run_experiment ETTh1 ETTh1 7 96 24 0.3 
+run_experiment ETTh1 ETTh1 7 192 24 0.3 
+run_experiment ETTh1 ETTh1 7 336 24 0.3 
+run_experiment ETTh1 ETTh1 7 720 24 0.3 
 
 # # ETTh2, n_vars=7, periodicity=24
 # run_experiment ETTh2 ETTh2 7 96 24 0.1 
