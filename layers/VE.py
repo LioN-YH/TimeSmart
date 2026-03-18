@@ -73,7 +73,8 @@ class MT2VEncoder(nn.Module):
         self.hilbert_curve_cache = {}
 
         # plot
-        self.plot_line_thickness = getattr(config, "plot_line_thickness", 6)
+        # Increased default thickness to ensure visibility after super-sampling
+        self.plot_line_thickness = getattr(config, "plot_line_thickness", 10)
 
         # add
         self.method_times = {}
@@ -218,9 +219,18 @@ class MT2VEncoder(nn.Module):
         if self.rp_threshold == "point":
             # quantile over last two dims
             flat_dist = distances.reshape(B, D, -1)
-            threshold = torch.quantile(
-                flat_dist, self.rp_percentage / 100.0, dim=2, keepdim=True
-            )
+            n = flat_dist.size(-1)
+            max_samples = 1000000
+            if n > max_samples:
+                idx = torch.randint(0, n, (max_samples,), device=flat_dist.device)
+                sample = flat_dist.index_select(2, idx)
+                threshold = torch.quantile(
+                    sample, self.rp_percentage / 100.0, dim=2, keepdim=True
+                )
+            else:
+                threshold = torch.quantile(
+                    flat_dist, self.rp_percentage / 100.0, dim=2, keepdim=True
+                )
             threshold = threshold.unsqueeze(3)  # (B, D, 1, 1)
 
             # Use Sigmoid for soft thresholding to enable gradient flow
@@ -261,9 +271,18 @@ class MT2VEncoder(nn.Module):
 
         if self.rp_threshold == "point":
             flat_dist = distances.reshape(B, 1, -1)
-            threshold = torch.quantile(
-                flat_dist, self.rp_percentage / 100.0, dim=2, keepdim=True
-            ).unsqueeze(3)
+            n = flat_dist.size(-1)
+            max_samples = 1000000
+            if n > max_samples:
+                idx = torch.randint(0, n, (max_samples,), device=flat_dist.device)
+                sample = flat_dist.index_select(2, idx)
+                threshold = torch.quantile(
+                    sample, self.rp_percentage / 100.0, dim=2, keepdim=True
+                ).unsqueeze(3)
+            else:
+                threshold = torch.quantile(
+                    flat_dist, self.rp_percentage / 100.0, dim=2, keepdim=True
+                ).unsqueeze(3)
             rp = torch.sigmoid(10.0 * (threshold - distances))
         elif self.rp_threshold == "distance":
             threshold = self.rp_percentage / 100.0
@@ -980,45 +999,65 @@ class MT2VEncoder(nn.Module):
         """
         Maps time series to a 2D image where x-axis is time and y-axis is value.
         Uses soft rendering (Gaussian) for differentiability.
+        Implements super-sampling to ensure continuous lines even with high slopes.
         """
         B, L, D = x.shape
         H, W = self.image_size, self.image_size
+
+        # Super-sampling factor to mitigate aliasing/discontinuity
+        # A factor of 4 reduces the step size by 4, making it much likely
+        # that adjacent points are within the sigma radius.
+        scale_factor = 4
+        W_scaled = W * scale_factor
 
         # 1. Normalize x to [0, H-1] range
         # Use min-max normalization per series to fit in the image height
         x_norm = self.normalize_per_series(x)  # (B, L, D) in [0, 1]
         x_scaled = x_norm * (H - 1)
 
-        # 2. Resize to W (Time axis)
+        # 2. Resize to W_scaled (Time axis)
         # Permute to (B, D, L) for interpolate
         x_perm = x_scaled.permute(0, 2, 1)
         # Linear interpolation to match image width
         x_resized = F.interpolate(
-            x_perm, size=W, mode="linear", align_corners=True
-        )  # (B, D, W)
+            x_perm, size=W_scaled, mode="linear", align_corners=True
+        )  # (B, D, W_scaled)
 
         # 3. Create Grid
         # y_grid: (1, 1, H, 1) -> Represents coordinate of each pixel row
         y_grid = torch.arange(H, device=x.device, dtype=x.dtype).view(1, 1, H, 1)
 
-        # x_resized: (B, D, 1, W) -> Represents the target coordinate for each column
+        # x_resized: (B, D, 1, W_scaled) -> Represents the target coordinate for each column
         y_centers = x_resized.unsqueeze(2)
 
         # 4. Gaussian Soft Rendering
         # Sigma controls the "thickness".
         sigma = max(0.5, self.plot_line_thickness / 2.0)
 
-        # Expand for broadcasting: (B, D, H, W)
-        # Distance squared from the center line
-        y_centers_expanded = y_centers.expand(-1, -1, H, -1)
-
-        dist_sq = (y_grid - y_centers_expanded) ** 2
+        # Distance squared from the center line (Broadcasting automatically)
+        dist_sq = (y_grid - y_centers) ** 2
 
         # Intensity = exp(-dist / 2sigma^2)
         # This creates a soft band around the target value
-        intensity = torch.exp(-dist_sq / (2 * sigma**2))
+        intensity = torch.exp(-dist_sq / (2 * sigma**2)) # (B, D, H, W_scaled)
 
-        # Result is already (B, D, H, W)
+        # 5. Downsample back to W (Anti-aliasing)
+        # We use Average Pooling to integrate the intensity over the super-sampled pixels
+        if scale_factor > 1:
+            intensity = F.avg_pool2d(
+                intensity, 
+                kernel_size=(1, scale_factor), 
+                stride=(1, scale_factor)
+            )
+
+        # Scale intensity back up because avg_pool reduces peak brightness for thin lines
+        # But for visualization/features, preserving the integral (energy) is often better.
+        # Let's keep it normalized to [0, 1] range roughly.
+        # Since we spread a point over 'scale_factor' pixels, the max intensity might drop.
+        # However, if the line is horizontal, all 'scale_factor' pixels are 1, so avg is 1.
+        # If the line is vertical, only few pixels are lit.
+        # This behavior is actually correct for anti-aliasing (lines appearing thinner/dimmer when moving fast).
+        
         return intensity
 
     def heat_mapping(self, x):
