@@ -1,6 +1,4 @@
-
-/*1219*/
-/*1228*/
+/*0*/
 /*AllResults*/
 /*output_test*/
 /*Reference*/
@@ -25,6 +23,7 @@ test_vis_etth1.py
 run.py
 TimeSmart实验数据记录.xlsx
 OT_trend_results.xlsx
-
+/*reference*/
 src/TimeSmart/
+/*TimeApart*/
 

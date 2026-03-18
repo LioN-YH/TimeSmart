@@ -1057,3 +1057,176 @@
 
 #         return
 # xxxxxxxxxxxxxxxxxxxxx
+
+import torch
+import torch.nn as nn
+
+# ===================== 配置你的路径 =====================
+PATH_A = "0202/TimeApart/Checkpoint_TimeApart/heat_ETTh1_seasonal_512_192_TimeApart_ETTh1_ETTh1_seasonal_sl512_pl192_dp0.3_0/checkpoint.pth"  # 第一个模型
+PATH_B = "0317/TimeApart_old/Checkpoint_TimeApart/cwt_OT_trend_512_96_TimeApart_ETTh1_OT_trend_sl512_pl96_dp0.3_0/checkpoint.pth"  # 第二个模型
+SAVE_PATH = "model_checkpoint_diff.txt"
+# ======================================================
+
+def load_model(path):
+    """加载 checkpoint，返回模型 state_dict"""
+    checkpoint = torch.load(path, map_location="cpu")
+    # 兼容常见保存格式：直接存model / 存dict / 存state_dict
+    if "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+    elif "model" in checkpoint:
+        state_dict = checkpoint["model"]
+    else:
+        state_dict = checkpoint
+    return state_dict
+
+def get_model_layers(state_dict):
+    """提取层名称、形状、参数数量"""
+    layers = []
+    for name, param in state_dict.items():
+        shape = list(param.shape)
+        numel = param.numel()  # 参数总数
+        layers.append(f"{name:<60} | shape={str(shape):<25} | params={numel}")
+    return sorted(layers)  # 排序后方便对比
+
+def load_checkpoint(path):
+    return torch.load(path, map_location="cpu")
+
+def find_state_dict(checkpoint):
+    if isinstance(checkpoint, dict):
+        for k in ["state_dict", "model", "model_state_dict", "net", "params"]:
+            v = checkpoint.get(k)
+            if isinstance(v, dict) and sum(torch.is_tensor(x) for x in v.values()) > 0:
+                return v, k
+        if sum(torch.is_tensor(v) for v in checkpoint.values()) > 0:
+            return checkpoint, "<root>"
+    raise ValueError("No state_dict found")
+
+def summarize_top_level(checkpoint):
+    out = {}
+    if not isinstance(checkpoint, dict):
+        out["<root_type>"] = type(checkpoint).__name__
+        return out
+    for k, v in checkpoint.items():
+        if torch.is_tensor(v):
+            out[k] = f"tensor{tuple(v.shape)}"
+        elif isinstance(v, dict):
+            out[k] = f"dict(len={len(v)})"
+        elif isinstance(v, (list, tuple)):
+            out[k] = f"{type(v).__name__}(len={len(v)})"
+        else:
+            out[k] = repr(v) if isinstance(v, (str, int, float, bool, type(None))) else type(v).__name__
+    return out
+
+def compare_state_dicts(sd_a, sd_b, topk=50, max_diff_items=2000000):
+    keys_a = set(sd_a.keys())
+    keys_b = set(sd_b.keys())
+    only_a = sorted(keys_a - keys_b)
+    only_b = sorted(keys_b - keys_a)
+    common = sorted(keys_a & keys_b)
+
+    shape_mismatch = []
+    diffs = []
+
+    for k in common:
+        ta = sd_a[k]
+        tb = sd_b[k]
+        if not (torch.is_tensor(ta) and torch.is_tensor(tb)):
+            continue
+        if ta.shape != tb.shape:
+            shape_mismatch.append((k, tuple(ta.shape), tuple(tb.shape)))
+            continue
+
+        numel = ta.numel()
+        if numel > max_diff_items:
+            idx = torch.randint(0, numel, (max_diff_items,), device=ta.device)
+            da = ta.reshape(-1).index_select(0, idx).float()
+            db = tb.reshape(-1).index_select(0, idx).float()
+            d = (da - db).abs()
+            mx = d.max().item()
+            mn = d.mean().item()
+            sampled = True
+        else:
+            d = (ta.float() - tb.float()).abs()
+            mx = d.max().item()
+            mn = d.mean().item()
+            sampled = False
+
+        diffs.append((k, mx, mn, numel, sampled))
+
+    diffs.sort(key=lambda x: x[1], reverse=True)
+    shape_mismatch.sort(key=lambda x: x[0])
+
+    return {
+        "only_a": only_a,
+        "only_b": only_b,
+        "shape_mismatch": shape_mismatch,
+        "diffs": diffs[:topk],
+    }
+
+ckpt_a = load_checkpoint(PATH_A)
+ckpt_b = load_checkpoint(PATH_B)
+sd_a, sd_src_a = find_state_dict(ckpt_a)
+sd_b, sd_src_b = find_state_dict(ckpt_b)
+
+layers_a = get_model_layers(sd_a)
+layers_b = get_model_layers(sd_b)
+cmp = compare_state_dicts(sd_a, sd_b)
+
+# 保存到文件
+with open(SAVE_PATH, "w", encoding="utf-8") as f:
+    f.write("=" * 100 + "\n")
+    f.write("TOP-LEVEL (A)\n")
+    f.write("=" * 100 + "\n")
+    for k, v in summarize_top_level(ckpt_a).items():
+        f.write(f"{k:<30} {v}\n")
+    f.write("\n")
+
+    f.write("=" * 100 + "\n")
+    f.write("TOP-LEVEL (B)\n")
+    f.write("=" * 100 + "\n")
+    for k, v in summarize_top_level(ckpt_b).items():
+        f.write(f"{k:<30} {v}\n")
+    f.write("\n")
+
+    f.write("=" * 100 + "\n")
+    f.write(f"STATE_DICT SOURCE: A={sd_src_a}, B={sd_src_b}\n")
+    f.write("=" * 100 + "\n\n")
+
+    f.write("=" * 100 + "\n")
+    f.write("KEYS ONLY IN A\n")
+    f.write("=" * 100 + "\n")
+    f.write("\n".join(cmp["only_a"]) + "\n\n")
+
+    f.write("=" * 100 + "\n")
+    f.write("KEYS ONLY IN B\n")
+    f.write("=" * 100 + "\n")
+    f.write("\n".join(cmp["only_b"]) + "\n\n")
+
+    f.write("=" * 100 + "\n")
+    f.write("SHAPE MISMATCHES\n")
+    f.write("=" * 100 + "\n")
+    if cmp["shape_mismatch"]:
+        for k, sa, sb in cmp["shape_mismatch"]:
+            f.write(f"{k:<60} {sa} -> {sb}\n")
+    else:
+        f.write("(none)\n")
+    f.write("\n")
+
+    f.write("=" * 100 + "\n")
+    f.write("TOP PARAMETER DIFFS (max_abs, mean_abs)\n")
+    f.write("=" * 100 + "\n")
+    for k, mx, mn, n, sampled in cmp["diffs"]:
+        f.write(f"{k:<60} max={mx:.6g} mean={mn:.6g} n={n} sampled={sampled}\n")
+    f.write("\n")
+
+    f.write("=" * 100 + "\n")
+    f.write(f"MODEL A (state_dict) LAYERS: {PATH_A}\n")
+    f.write("=" * 100 + "\n")
+    f.write("\n".join(layers_a))
+
+    f.write("\n\n" + "=" * 100 + "\n")
+    f.write(f"MODEL B (state_dict) LAYERS: {PATH_B}\n")
+    f.write("=" * 100 + "\n")
+    f.write("\n".join(layers_b))
+
+print(f"✅ checkpoint 对比报告已导出到: {SAVE_PATH}")

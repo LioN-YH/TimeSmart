@@ -1,0 +1,452 @@
+[Report] 2026-03-18 21:02:25
+[Report] out=/home/user10/TimeSmart/analysis/checkGradient/gradient_report.txt
+
+==================== Checking Gradient Flow | method=stft | finetune_vlm=True ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=207 | loss=1.024645e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.578464e-01
+backbone         |       180 |       2 |    0 |          0 | 1.192688e-01
+head             |         4 |       0 |    0 |          0 | 8.075224e-01
+input_align      |         6 |       0 |    0 |          0 | 1.445521e-01
+input_projector  |         5 |       0 |    0 |          0 | 8.891638e-02
+neck             |         4 |       0 |    0 |          0 | 1.342150e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.252969e-01
+
+[ERROR] Missing gradients (first 30):
+  - backbone.layernorm.weight
+  - backbone.layernorm.bias
+
+[Input grad] finite=True | norm=4.399396e-01 | mean_abs=8.961706e-03
+
+==================== Checking Gradient Flow | method=stft | finetune_vlm=False ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Freezing backbone parameters...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=27 | loss=1.012926e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.599928e-01
+head             |         4 |       0 |    0 |          0 | 8.265509e-01
+input_align      |         6 |       0 |    0 |          0 | 4.008207e-01
+input_projector  |         5 |       0 |    0 |          0 | 8.541006e-02
+neck             |         4 |       0 |    0 |          0 | 1.360309e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.477641e-01
+
+[Input grad] finite=True | norm=5.082953e-01 | mean_abs=1.199384e-02
+
+==================== Checking Gradient Flow | method=gaf | finetune_vlm=True ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=208 | loss=1.046207e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.682832e-01
+backbone         |       180 |       2 |    0 |          0 | 8.725390e-02
+head             |         4 |       0 |    0 |          0 | 8.293601e-01
+input_align      |         6 |       0 |    0 |          0 | 1.075271e-01
+input_projector  |         6 |       0 |    0 |          0 | 3.251798e-02
+neck             |         4 |       0 |    0 |          0 | 1.417552e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.473401e-01
+
+[ERROR] Missing gradients (first 30):
+  - backbone.layernorm.weight
+  - backbone.layernorm.bias
+
+[Input grad] finite=True | norm=1.139058e-01 | mean_abs=2.033466e-03
+
+==================== Checking Gradient Flow | method=gaf | finetune_vlm=False ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Freezing backbone parameters...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=28 | loss=1.046207e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.682832e-01
+head             |         4 |       0 |    0 |          0 | 8.293601e-01
+input_align      |         6 |       0 |    0 |          0 | 1.075271e-01
+input_projector  |         6 |       0 |    0 |          0 | 3.251799e-02
+neck             |         4 |       0 |    0 |          0 | 1.417552e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.473401e-01
+
+[Input grad] finite=True | norm=1.139058e-01 | mean_abs=2.033466e-03
+
+==================== Checking Gradient Flow | method=wavelet | finetune_vlm=True ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=207 | loss=1.050026e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.672433e-01
+backbone         |       180 |       2 |    0 |          0 | 1.639741e-01
+head             |         4 |       0 |    0 |          0 | 8.604734e-01
+input_align      |         6 |       0 |    0 |          0 | 4.508769e-01
+input_projector  |         5 |       0 |    0 |          0 | 9.109784e-02
+neck             |         4 |       0 |    0 |          0 | 1.493883e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.567343e-01
+
+[ERROR] Missing gradients (first 30):
+  - backbone.layernorm.weight
+  - backbone.layernorm.bias
+
+[Input grad] finite=True | norm=2.020999e-01 | mean_abs=5.754871e-03
+
+==================== Checking Gradient Flow | method=wavelet | finetune_vlm=False ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Freezing backbone parameters...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=27 | loss=1.050026e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.672433e-01
+head             |         4 |       0 |    0 |          0 | 8.604734e-01
+input_align      |         6 |       0 |    0 |          0 | 4.508769e-01
+input_projector  |         5 |       0 |    0 |          0 | 9.109781e-02
+neck             |         4 |       0 |    0 |          0 | 1.493883e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.567343e-01
+
+[Input grad] finite=True | norm=2.020999e-01 | mean_abs=5.754871e-03
+
+==================== Checking Gradient Flow | method=cwt | finetune_vlm=True ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=207 | loss=1.124366e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.782390e-01
+backbone         |       180 |       2 |    0 |          0 | 1.143847e-01
+head             |         4 |       0 |    0 |          0 | 1.027698e+00
+input_align      |         6 |       0 |    0 |          0 | 1.887175e-01
+input_projector  |         5 |       0 |    0 |          0 | 6.039380e-02
+neck             |         4 |       0 |    0 |          0 | 1.731147e+00
+pooling_head     |         4 |       0 |    0 |          0 | 6.609056e-01
+
+[ERROR] Missing gradients (first 30):
+  - backbone.layernorm.weight
+  - backbone.layernorm.bias
+
+[Input grad] finite=True | norm=7.348887e-02 | mean_abs=1.874393e-03
+
+==================== Checking Gradient Flow | method=cwt | finetune_vlm=False ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Freezing backbone parameters...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=27 | loss=1.124366e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.782390e-01
+head             |         4 |       0 |    0 |          0 | 1.027698e+00
+input_align      |         6 |       0 |    0 |          0 | 1.887175e-01
+input_projector  |         5 |       0 |    0 |          0 | 6.039388e-02
+neck             |         4 |       0 |    0 |          0 | 1.731147e+00
+pooling_head     |         4 |       0 |    0 |          0 | 6.609056e-01
+
+[Input grad] finite=True | norm=7.348887e-02 | mean_abs=1.874393e-03
+
+==================== Checking Gradient Flow | method=seg | finetune_vlm=True ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=207 | loss=1.014536e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.476080e-01
+backbone         |       180 |       2 |    0 |          0 | 1.310838e-01
+head             |         4 |       0 |    0 |          0 | 8.455480e-01
+input_align      |         6 |       0 |    0 |          0 | 5.523803e-01
+input_projector  |         5 |       0 |    0 |          0 | 2.475286e-01
+neck             |         4 |       0 |    0 |          0 | 1.339492e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.117119e-01
+
+[ERROR] Missing gradients (first 30):
+  - backbone.layernorm.weight
+  - backbone.layernorm.bias
+
+[Input grad] finite=True | norm=7.803225e-02 | mean_abs=1.969502e-03
+
+==================== Checking Gradient Flow | method=seg | finetune_vlm=False ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Freezing backbone parameters...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=27 | loss=1.014536e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.476080e-01
+head             |         4 |       0 |    0 |          0 | 8.455480e-01
+input_align      |         6 |       0 |    0 |          0 | 5.523803e-01
+input_projector  |         5 |       0 |    0 |          0 | 2.475277e-01
+neck             |         4 |       0 |    0 |          0 | 1.339492e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.117119e-01
+
+[Input grad] finite=True | norm=7.803225e-02 | mean_abs=1.969502e-03
+
+==================== Checking Gradient Flow | method=rp | finetune_vlm=True ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=208 | loss=1.038527e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.643582e-01
+backbone         |       180 |       2 |    0 |          0 | 1.216195e-01
+head             |         4 |       0 |    0 |          0 | 8.423676e-01
+input_align      |         6 |       0 |    0 |          0 | 3.458702e-01
+input_projector  |         6 |       0 |    0 |          0 | 9.312040e-02
+neck             |         4 |       0 |    0 |          0 | 1.392041e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.407944e-01
+
+[ERROR] Missing gradients (first 30):
+  - backbone.layernorm.weight
+  - backbone.layernorm.bias
+
+[Input grad] finite=True | norm=4.959649e-01 | mean_abs=1.112361e-02
+
+==================== Checking Gradient Flow | method=rp | finetune_vlm=False ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Freezing backbone parameters...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=28 | loss=1.038527e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.643582e-01
+head             |         4 |       0 |    0 |          0 | 8.423676e-01
+input_align      |         6 |       0 |    0 |          0 | 3.458701e-01
+input_projector  |         6 |       0 |    0 |          0 | 9.312042e-02
+neck             |         4 |       0 |    0 |          0 | 1.392041e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.407944e-01
+
+[Input grad] finite=True | norm=4.959649e-01 | mean_abs=1.112361e-02
+
+==================== Checking Gradient Flow | method=mel | finetune_vlm=True ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=207 | loss=1.057901e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.573490e-01
+backbone         |       180 |       2 |    0 |          0 | 1.078383e-01
+head             |         4 |       0 |    0 |          0 | 8.319384e-01
+input_align      |         6 |       0 |    0 |          0 | 1.889087e-01
+input_projector  |         5 |       0 |    0 |          0 | 5.175745e-02
+neck             |         4 |       0 |    0 |          0 | 1.433559e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.748237e-01
+
+[ERROR] Missing gradients (first 30):
+  - backbone.layernorm.weight
+  - backbone.layernorm.bias
+
+[Input grad] finite=True | norm=1.064747e-01 | mean_abs=3.097808e-03
+
+==================== Checking Gradient Flow | method=mel | finetune_vlm=False ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Freezing backbone parameters...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=27 | loss=1.057901e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.573490e-01
+head             |         4 |       0 |    0 |          0 | 8.319384e-01
+input_align      |         6 |       0 |    0 |          0 | 1.889087e-01
+input_projector  |         5 |       0 |    0 |          0 | 5.175750e-02
+neck             |         4 |       0 |    0 |          0 | 1.433559e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.748237e-01
+
+[Input grad] finite=True | norm=1.064747e-01 | mean_abs=3.097808e-03
+
+==================== Checking Gradient Flow | method=mtf | finetune_vlm=True ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=208 | loss=1.046921e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.744153e-01
+backbone         |       180 |       2 |    0 |          0 | 1.004455e-01
+head             |         4 |       0 |    0 |          0 | 9.229274e-01
+input_align      |         6 |       0 |    0 |          0 | 1.751854e-01
+input_projector  |         6 |       0 |    0 |          0 | 3.197272e-02
+neck             |         4 |       0 |    0 |          0 | 1.445781e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.884159e-01
+
+[ERROR] Missing gradients (first 30):
+  - backbone.layernorm.weight
+  - backbone.layernorm.bias
+
+[Input grad] finite=True | norm=9.301738e-02 | mean_abs=2.147947e-03
+
+==================== Checking Gradient Flow | method=mtf | finetune_vlm=False ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Freezing backbone parameters...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=28 | loss=1.046921e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.744153e-01
+head             |         4 |       0 |    0 |          0 | 9.229274e-01
+input_align      |         6 |       0 |    0 |          0 | 1.751854e-01
+input_projector  |         6 |       0 |    0 |          0 | 3.197263e-02
+neck             |         4 |       0 |    0 |          0 | 1.445781e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.884159e-01
+
+[Input grad] finite=True | norm=9.301738e-02 | mean_abs=2.147947e-03
+
+==================== Checking Gradient Flow | method=st | finetune_vlm=True ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=207 | loss=1.056164e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.675256e-01
+backbone         |       180 |       2 |    0 |          0 | 1.798294e-01
+head             |         4 |       0 |    0 |          0 | 9.012284e-01
+input_align      |         6 |       0 |    0 |          0 | 4.447325e-01
+input_projector  |         5 |       0 |    0 |          0 | 1.283349e-01
+neck             |         4 |       0 |    0 |          0 | 1.334162e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.613823e-01
+
+[ERROR] Missing gradients (first 30):
+  - backbone.layernorm.weight
+  - backbone.layernorm.bias
+
+[Input grad] finite=True | norm=1.402227e-01 | mean_abs=4.084588e-03
+
+==================== Checking Gradient Flow | method=st | finetune_vlm=False ====================
+Using device: cuda
+Loading ConvNeXt backbone...
+Freezing backbone parameters...
+Backbone output shape: C=768, H=2, W=2
+Neck output shape: C=256, H=1, W=1
+Feature dimension after structured pooling: 1024
+Running forward pass...
+Running backward pass...
+
+--- Gradient Summary ---
+trainable_params=27 | loss=1.056164e+00
+
+[Group stats] name | trainable | missing | zero | non_finite | avg_grad_norm
+adapter          |         4 |       0 |    0 |          0 | 1.675256e-01
+head             |         4 |       0 |    0 |          0 | 9.012284e-01
+input_align      |         6 |       0 |    0 |          0 | 4.447325e-01
+input_projector  |         5 |       0 |    0 |          0 | 1.283349e-01
+neck             |         4 |       0 |    0 |          0 | 1.334162e+00
+pooling_head     |         4 |       0 |    0 |          0 | 5.613823e-01
+
+[Input grad] finite=True | norm=1.402227e-01 | mean_abs=4.084588e-03
