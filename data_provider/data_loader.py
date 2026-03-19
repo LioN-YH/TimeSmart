@@ -396,6 +396,113 @@ class Dataset_Custom(Dataset):
         return self.scaler.inverse_transform(data)
 
 
+class MixedForecastDataset(Dataset):
+    def __init__(
+        self,
+        datasets,
+        weights,
+        dataset_names=None,
+        epoch_len=None,
+        seed=2024,
+    ):
+        if len(datasets) < 2:
+            raise ValueError("MixedForecastDataset needs at least two datasets.")
+        if len(datasets) != len(weights):
+            raise ValueError("datasets and weights must have the same length.")
+
+        self.datasets = datasets # 存储所有子数据集
+        self.dataset_names = dataset_names or [f"dataset_{i}" for i in range(len(datasets))]
+        self.seed = seed
+        self.rng = np.random.RandomState(seed) # 固定随机数生成器，可复现
+
+        # 权重归一化
+        weights = np.asarray(weights, dtype=np.float64)
+        if np.any(weights < 0):
+            raise ValueError("weights must be non-negative.")
+        if np.allclose(weights.sum(), 0):
+            raise ValueError("At least one weight must be positive.")
+        self.weights = weights / weights.sum()
+
+        self.dataset_lengths = [len(ds) for ds in self.datasets]
+        if any(length <= 0 for length in self.dataset_lengths):
+            raise ValueError(f"All datasets must contain at least one sample, got {self.dataset_lengths}")
+
+        # 设置每个epoch的总样本数
+        # 不指定则用最长数据集的长度
+        self.epoch_len = int(epoch_len) if epoch_len is not None and int(epoch_len) > 0 else max(self.dataset_lengths)
+        self.sample_plan = []
+        self.sample_indices = []
+        self.refresh_plan()
+
+    # 返回每个 epoch 的样本总数
+    def __len__(self):
+        return self.epoch_len
+
+    # 按权重计算每个数据集应该抽取多少个样本
+    def _build_counts(self):
+        exact = self.weights * self.epoch_len
+        counts = np.floor(exact).astype(int) # 向下取整
+        remain = self.epoch_len - counts.sum() # 计算还差多少样本（因为取整会有小数损失）
+        
+        # # 把缺少的样本，优先补给 小数部分最大的数据集
+        if remain > 0:
+            order = np.argsort(-(exact - counts))
+            for idx in order[:remain]:
+                counts[idx] += 1
+        return counts.tolist()
+
+    # 从单个数据集中随机抽取指定数量的样本索引（支持数据集长度不足时循环采样）
+    def _sample_indices_for_dataset(self, dataset_idx, count):
+        ds_len = self.dataset_lengths[dataset_idx]
+        
+        # 情况1：需要的样本数 ≤ 数据集长度 → 直接随机选count个不重复索引
+        if count <= ds_len:
+            return self.rng.permutation(ds_len)[:count].tolist()
+
+        #  情况2：需要的样本数 > 数据集长度 → 完整遍历多次 + 剩余部分
+        full_repeats = count // ds_len
+        remainder = count % ds_len
+        sampled = []
+        for _ in range(full_repeats):
+            sampled.extend(self.rng.permutation(ds_len).tolist())
+        if remainder > 0:
+            sampled.extend(self.rng.permutation(ds_len)[:remainder].tolist())
+        return sampled
+    
+    # 生成全局采样计划：每个样本从哪个数据集取、取第几个，并且全局打乱
+    def refresh_plan(self):
+        counts = self._build_counts() # 计算每个数据集抽多少样本
+        sample_plan = []
+        sample_indices = []
+        
+        # 为每个数据集生成采样索引
+        for dataset_idx, count in enumerate(counts):
+            sampled_indices = self._sample_indices_for_dataset(dataset_idx, count)
+            sample_plan.extend([dataset_idx] * count) # 标记数据集来源
+            sample_indices.extend(sampled_indices)    # 标记样本索引
+
+        # 校验长度匹配
+        if len(sample_plan) != self.epoch_len or len(sample_indices) != self.epoch_len:
+            raise RuntimeError("Mixed sample plan length mismatch.")
+
+        # 全局随机打乱（关键！避免同一数据集样本连续出现）
+        # 最终生成两个关键列表：
+        # sample_plan：[1,0,1,0,1...] → 第 i 个样本来自第几个数据集
+        # sample_indices：[3,9,2,5,0...] → 对应数据集中的第几个样本
+
+        perm = self.rng.permutation(self.epoch_len)
+        self.sample_plan = [sample_plan[i] for i in perm]
+        self.sample_indices = [sample_indices[i] for i in perm]
+
+    def __getitem__(self, index):
+        dataset_idx = self.sample_plan[index] # 查来源数据集
+        sample_idx = self.sample_indices[index] # 查样本索引
+        return self.datasets[dataset_idx][sample_idx]
+
+    def inverse_transform(self, data, dataset_idx=0):
+        return self.datasets[dataset_idx].inverse_transform(data)
+
+
 class Dataset_M4(Dataset):
     def __init__(
         self,

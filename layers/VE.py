@@ -79,16 +79,6 @@ class MT2VEncoder(nn.Module):
         # add
         self.method_times = {}
 
-        # ===== runtime caches for differentiable ts2img =====
-        # These caches only store constants derived from shape / device / dtype / config.
-        # They do NOT depend on input x, so they do not affect gradient flow to x.
-        self._mel_filter_cache = {}
-        self._s_transform_cache = {}
-        self._wavelet_cache = {}
-        self._cwt_cache = {}
-        self._smooth_kernel_cache = {}
-        self._plot_grid_cache = {}
-
         interpolation = {
             "bilinear": Image.BILINEAR,
             "nearest": Image.NEAREST,
@@ -127,169 +117,6 @@ class MT2VEncoder(nn.Module):
         if x_max - x_min < eps:
             return torch.zeros_like(x)
         return (x - x_min) / (x_max - x_min + eps)
-
-    def _cache_key(self, *items):
-        return tuple(items)
-
-    def _get_plot_y_grid(self, H, device, dtype):
-        key = self._cache_key("plot_y_grid", H, str(device), str(dtype))
-        if key not in self._plot_grid_cache:
-            self._plot_grid_cache[key] = torch.arange(
-                H, device=device, dtype=dtype
-            ).view(1, 1, H, 1)
-        return self._plot_grid_cache[key]
-
-    def _get_smooth_weights(self, H, W, D, device, dtype):
-        """Build and cache grouped 1D moving-average kernels for smooth_mapping."""
-        target_max = max(3, W // 4)
-        K_max = target_max if target_max % 2 == 1 else target_max - 1
-
-        key = self._cache_key("smooth", H, W, D, str(device), str(dtype))
-        if key in self._smooth_kernel_cache:
-            return self._smooth_kernel_cache[key], K_max
-
-        h_idx = torch.arange(H, device=device, dtype=torch.float32)
-        if H == 1:
-            progress = torch.ones_like(h_idx)
-        else:
-            progress = (H - 1 - h_idx) / (H - 1)
-
-        k_float = 1 + (K_max - 1) * progress
-        k = torch.round(k_float).to(torch.long)
-        k = k + (k % 2 == 0).to(torch.long)
-        k = torch.clamp(k, max=K_max)
-
-        pos = torch.arange(K_max, device=device).view(1, K_max)
-        start = ((K_max - k) // 2).view(H, 1)
-        end = (start.squeeze(1) + k).view(H, 1)
-
-        mask = ((pos >= start) & (pos < end)).to(dtype)
-        weights = mask / k.to(dtype).view(H, 1)
-        weights = weights.view(H, 1, K_max)
-
-        if D > 1:
-            weights = weights.repeat(D, 1, 1)
-
-        self._smooth_kernel_cache[key] = weights
-        return weights, K_max
-
-    def _get_mel_filter_bank(self, n_fft, device, dtype):
-        key = self._cache_key(
-            "mel",
-            n_fft,
-            self.num_filters,
-            bool(self.use_mel),
-            str(device),
-            str(dtype),
-        )
-        if key in self._mel_filter_cache:
-            return self._mel_filter_cache[key]
-
-        n_freq_bins = n_fft // 2 + 1
-        sample_rate = 1.0
-        freqs = torch.fft.rfftfreq(n_fft, d=1.0 / sample_rate, device=device).to(dtype)
-
-        if self.use_mel:
-            mel_min = 2595 * torch.log10(1 + freqs[0] / 700)
-            mel_max = 2595 * torch.log10(1 + freqs[-1] / 700)
-            mel_points = torch.linspace(
-                mel_min, mel_max, self.num_filters + 2, device=device, dtype=dtype
-            )
-            freq_points = 700 * (10 ** (mel_points / 2595) - 1)
-
-            f_left = freq_points[:-2].view(-1, 1)
-            f_center = freq_points[1:-1].view(-1, 1)
-            f_right = freq_points[2:].view(-1, 1)
-            freqs_row = freqs.view(1, -1)
-
-            left = (freqs_row - f_left) / (f_center - f_left + 1e-8)
-            right = (f_right - freqs_row) / (f_right - f_center + 1e-8)
-
-            left = torch.clamp(left, min=0.0)
-            right = torch.clamp(right, min=0.0)
-            filter_bank = torch.minimum(left, right)
-        else:
-            bandwidth = freqs[-1] / self.num_filters
-            centers = (
-                (torch.arange(self.num_filters, device=device, dtype=dtype) + 0.5)
-                * bandwidth
-            ).view(-1, 1)
-            filter_bank = torch.exp(
-                -0.5 * ((freqs.view(1, -1) - centers) / (bandwidth / 2 + 1e-8)) ** 2
-            )
-
-        self._mel_filter_cache[key] = filter_bank
-        return filter_bank
-
-    def _get_s_transform_mask(self, L, device, dtype):
-        key = self._cache_key("st_mask", L, str(device), str(dtype))
-        if key in self._s_transform_cache:
-            return self._s_transform_cache[key]
-
-        if L % 2 == 0:
-            k = torch.cat(
-                [
-                    torch.arange(L // 2, device=device),
-                    torch.arange(-L // 2, 0, device=device),
-                ]
-            ).to(dtype)
-        else:
-            k = torch.cat(
-                [
-                    torch.arange((L - 1) // 2 + 1, device=device),
-                    torch.arange(-(L - 1) // 2, 0, device=device),
-                ]
-            ).to(dtype)
-
-        max_f = L // 2
-        f = torch.arange(1, max_f + 1, device=device, dtype=dtype).unsqueeze(1)
-        exponent = -2 * (torch.pi**2) * (k.unsqueeze(0) - f) ** 2 / (f**2)
-        mask = torch.exp(exponent)
-
-        self._s_transform_cache[key] = mask
-        return mask
-
-    def _get_wavelet_bank(self, L, S, device, dtype):
-        key = self._cache_key(
-            "morlet_bank", L, S, bool(self.use_log_scale), str(device), str(dtype)
-        )
-        if key in self._wavelet_cache:
-            return self._wavelet_cache[key]
-
-        end_exp = torch.log10(torch.tensor(L / 2.0, device=device, dtype=dtype))
-        scales = torch.logspace(
-            0, float(end_exp.item()), S, base=10, device=device, dtype=dtype
-        )
-
-        t = torch.arange(L, device=device, dtype=dtype).unsqueeze(0)
-        center = torch.tensor(L / 2.0, device=device, dtype=dtype)
-        sin_term = torch.sin(2 * torch.pi * (t / scales.unsqueeze(1)))
-        gauss = torch.exp(-((t - center) ** 2) / (2 * (scales.unsqueeze(1) ** 2)))
-        wavelets = sin_term * gauss
-        wavelets = wavelets / (torch.linalg.norm(wavelets, dim=1, keepdim=True) + 1e-8)
-
-        Wf = torch.fft.rfft(wavelets, dim=-1)
-        self._wavelet_cache[key] = Wf
-        return Wf
-
-    def _get_cwt_bank(self, L, S, device, dtype):
-        key = self._cache_key("ricker_bank", L, S, str(device), str(dtype))
-        if key in self._cwt_cache:
-            return self._cwt_cache[key]
-
-        end_exp = torch.log10(torch.tensor(L / 2.0, device=device, dtype=dtype))
-        scales = torch.logspace(
-            0, float(end_exp.item()), S, base=10, device=device, dtype=dtype
-        )
-
-        t = torch.arange(L, device=device, dtype=dtype).unsqueeze(0) - (L / 2.0)
-        t_scaled = t / scales.unsqueeze(1)
-        ricker = (1 - t_scaled**2) * torch.exp(-0.5 * t_scaled**2)
-        ricker = ricker / (torch.linalg.norm(ricker, dim=1, keepdim=True) + 1e-8)
-
-        Wf = torch.fft.rfft(ricker, dim=-1)
-        self._cwt_cache[key] = Wf
-        return Wf
 
     def segmentation(self, x):
         B, L, D = x.shape
@@ -620,30 +447,74 @@ class MT2VEncoder(nn.Module):
     # CHANGE：GPU优化版本
     def wavelet_transform_gpu(self, x):
         B, L, D = x.shape
-        S = 32
+        S = 32  # Number of scales (frequencies)
 
+        # 1. Generate Scales (Log-spaced)
+        # Scales correspond to 1/frequency. We range from small scale (high freq) to large scale (low freq).
+        end_exp = torch.log10(torch.tensor(L / 2.0, device=x.device))
+        scales = torch.logspace(0, float(end_exp.item()), S, base=10, device=x.device)
+
+        # 2. Construct Morlet Wavelet Bank in Frequency Domain
+        # t: Time points [0, 1, ..., L-1]
+        t = torch.arange(L, device=x.device).unsqueeze(0)  # (1, L)
+        center = L / 2.0  # Center the wavelet in the time window
+
+        # Morlet Wavelet formula: psi(t) = sin(2*pi*t/s) * exp(-(t-center)^2 / (2*s^2))
+        # scales.unsqueeze(1) -> (S, 1) to broadcast over time
+        sin_term = torch.sin(2 * torch.pi * (t / scales.unsqueeze(1)))
+        gauss = torch.exp(-((t - center) ** 2) / (2 * (scales.unsqueeze(1) ** 2)))
+        wavelets = sin_term * gauss  # (S, L)
+
+        # Normalize wavelets to have unit energy
+        wavelets = wavelets / (torch.linalg.norm(wavelets, dim=1, keepdim=True) + 1e-8)
+
+        # 3. Frequency Domain Convolution (Theorem: Conv(x, w) <=> IFFT(FFT(x) * FFT(w)))
+        # Reshape x to (B*D, L) for batch processing
         x_bd = x.permute(0, 2, 1).reshape(B * D, L)
-        Xf = torch.fft.rfft(x_bd, dim=-1)
-        Wf = self._get_wavelet_bank(L, S, x.device, x.dtype)
 
+        # FFT of input signal
+        Xf = torch.fft.rfft(x_bd, dim=-1)  # (B*D, L//2 + 1)
+        # FFT of wavelet bank
+        Wf = torch.fft.rfft(wavelets, dim=-1)  # (S, L//2 + 1)
+
+        # Broadcasting multiply: (B*D, 1, F) * (1, S, F) -> (B*D, S, F)
         Yf = Xf.unsqueeze(1) * Wf.unsqueeze(0)
-        coeff = torch.fft.irfft(Yf, n=L, dim=-1)
+
+        # Inverse FFT to get CWT coefficients
+        coeff = torch.fft.irfft(Yf, n=L, dim=-1)  # (B*D, S, L)
+
+        # Reshape back to (B, D, S, L)
         coeff = coeff.reshape(B, D, S, L)
 
+        # 4. Post-processing (Magnitude & Log-scale)
         if self.use_log_scale:
             coeff = torch.log1p(torch.abs(coeff))
         else:
             coeff = torch.abs(coeff)
 
+        # 5. Normalization
+        # Normalize per image (S, L) dimensions
+        # mn = coeff.amin(dim=(-2, -1), keepdim=True)
+        # mx = coeff.amax(dim=(-2, -1), keepdim=True)
+        # coeff = (coeff - mn) / (mx - mn + 1e-8)
+
+        # Contrast adjustment and clamping
+        # coeff = 0.2 + 0.8 * coeff
+
+        # CHANGE：Multivariate Average Pooling
         if self.compress_vars:
             coeff = coeff.mean(dim=1, keepdim=True)
 
+        # 6. Interpolate to target image size
         coeff = F.interpolate(
             coeff,
             size=(self.image_size, self.image_size),
             mode="bilinear",
             align_corners=False,
         )
+        # coeff = torch.clamp(coeff, 0.05, 1.0)
+
+        # Normalize per image after interpolation
         coeff = self.normalize_per_image(coeff)
 
         return coeff
@@ -651,22 +522,67 @@ class MT2VEncoder(nn.Module):
     def cwt_spectrogram_real(self, x):
         """
         Continuous Wavelet Transform (CWT) using Real Wavelet (Mexican Hat / Ricker).
-        Output mapping preserves coefficient sign by mapping 0 to 0.5.
+        Unlike standard Spectrograms or Wavelet Magnitude, this method preserves
+        PHASE information (sign of the signal) by avoiding abs() and mapping
+        the real-valued coefficients directly to [0, 1].
+
+        Output mapping:
+        - Positive coefficients (Peaks) -> > 0.5 (Brighter)
+        - Zero coefficients (Silence)   -> 0.5 (Gray)
+        - Negative coefficients (Troughs)-> < 0.5 (Darker)
         """
         B, L, D = x.shape
-        S = 32
+        S = 32  # Number of scales
 
+        # 1. Generate Scales
+        # Ricker wavelet is well defined for scales.
+        end_exp = torch.log10(torch.tensor(L / 2.0, device=x.device))
+        scales = torch.logspace(0, float(end_exp.item()), S, base=10, device=x.device)
+
+        # 2. Construct Ricker (Mexican Hat) Wavelet in Frequency Domain
+        # Ricker time domain: A * (1 - t^2/a^2) * exp(-t^2/2a^2)
+        # Ricker freq domain: A * (w^2 * a^2) * exp(-w^2 * a^2 / 2)
+        # It's computationally more stable to build in Time Domain and FFT
+
+        t = torch.arange(L, device=x.device).unsqueeze(0) - L / 2.0  # Center at 0
+        # t: (1, L), scales: (S) -> (S, L)
+        t_scaled = t / scales.unsqueeze(1)
+
+        # Ricker Wavelet Formula
+        # psi(t) = (1 - t^2) * exp(-t^2/2)
+        ricker = (1 - t_scaled**2) * torch.exp(-0.5 * t_scaled**2)
+
+        # Energy Normalization
+        ricker = ricker / (torch.linalg.norm(ricker, dim=1, keepdim=True) + 1e-8)
+
+        # 3. Frequency Domain Convolution
         x_bd = x.permute(0, 2, 1).reshape(B * D, L)
-        Xf = torch.fft.rfft(x_bd, dim=-1)
-        Wf = self._get_cwt_bank(L, S, x.device, x.dtype)
 
-        Yf = Xf.unsqueeze(1) * Wf.unsqueeze(0)
-        coeff = torch.fft.irfft(Yf, n=L, dim=-1)
+        Xf = torch.fft.rfft(x_bd, dim=-1)  # (B*D, L//2+1)
+        Wf = torch.fft.rfft(ricker, dim=-1)  # (S, L//2+1)
+
+        Yf = Xf.unsqueeze(1) * Wf.unsqueeze(0)  # (B*D, S, L//2+1)
+
+        # Inverse FFT -> Real values (Phase preserved)
+        coeff = torch.fft.irfft(Yf, n=L, dim=-1)  # (B*D, S, L)
         coeff = coeff.reshape(B, D, S, L)
 
+        # 4. Phase-Preserving Normalization
+        # Instead of abs(), we map the signed range to [0, 1]
+        # We want 0 to be mapped to 0.5 to preserve "neutrality"
+
+        # Global scaling strategy to preserve relative amplitude across frequencies
+        # Find max absolute value per image to determine the range [-max, +max]
         max_val = torch.abs(coeff).amax(dim=(-2, -1), keepdim=True)
+
+        # Map [-max, +max] -> [0, 1]
+        # x_norm = (x / max_val + 1) / 2
+        # -max -> (-1 + 1)/2 = 0
+        # 0    -> (0 + 1)/2 = 0.5
+        # +max -> (1 + 1)/2 = 1
         coeff = (coeff / (max_val + 1e-8) + 1) / 2.0
 
+        # 5. Pooling & Interpolate
         if self.compress_vars:
             coeff = coeff.mean(dim=1, keepdim=True)
 
@@ -676,6 +592,11 @@ class MT2VEncoder(nn.Module):
             mode="bilinear",
             align_corners=False,
         )
+
+        # Note: We do NOT use normalize_per_image again here,
+        # because we intentionally set the center (0) to 0.5.
+        # Standard Min-Max would shift the zero-point if the signal is not symmetric.
+        # But we clip to ensure safety.
         coeff = torch.clamp(coeff, 0.0, 1.0)
 
         return coeff
@@ -686,9 +607,13 @@ class MT2VEncoder(nn.Module):
         n_fft = min(self.stft_window_size, L)
         hop_length = max(1, self.stft_hop_length)
         win_length = n_fft
-        window = torch.hann_window(win_length, device=x.device, dtype=x.dtype)
+        window = torch.hann_window(win_length, device=x.device)
+        n_freq_bins = n_fft // 2 + 1
 
+        # 1. Vectorized STFT
         x_flat = x.permute(0, 2, 1).reshape(B * D, L)
+
+        # Z-score normalization per series (Standard for audio-like processing)
         x_norm = self.standardize_per_series(x_flat)
 
         stft_result = torch.stft(
@@ -700,17 +625,57 @@ class MT2VEncoder(nn.Module):
             return_complex=True,
             pad_mode="constant",
         )
-        power_spec = torch.abs(stft_result) ** 2
+        # Power Spectrogram: |STFT|^2
+        power_spec = torch.abs(stft_result) ** 2  # (B*D, n_freq, n_time)
         n_time_bins = power_spec.shape[-1]
 
-        filter_bank = self._get_mel_filter_bank(
-            n_fft=n_fft, device=x.device, dtype=power_spec.dtype
-        )
+        # 2. Create Mel Filter Bank
+        sample_rate = 1.0  # Normalized sample rate
+        freqs = torch.fft.rfftfreq(n_fft, d=1.0 / sample_rate, device=x.device)
 
+        if self.use_mel:
+            mel_min = 2595 * torch.log10(1 + freqs[0] / 700)
+            mel_max = 2595 * torch.log10(1 + freqs[-1] / 700)
+            mel_points = torch.linspace(
+                mel_min, mel_max, self.num_filters + 2, device=x.device
+            )
+            freq_points = 700 * (10 ** (mel_points / 2595) - 1)
+            filter_bank = torch.zeros(self.num_filters, n_freq_bins, device=x.device)
+            for i in range(self.num_filters):
+                f_left = freq_points[i]
+                f_center = freq_points[i + 1]
+                f_right = freq_points[i + 2]
+                left_mask = (freqs >= f_left) & (freqs <= f_center)
+                right_mask = (freqs >= f_center) & (freqs <= f_right)
+                left_slope = (freqs[left_mask] - f_left) / (f_center - f_left + 1e-8)
+                right_slope = (f_right - freqs[right_mask]) / (
+                    f_right - f_center + 1e-8
+                )
+                filter_bank[i, left_mask] = left_slope
+                filter_bank[i, right_mask] = right_slope
+        else:
+            # Gaussian filter bank
+            bandwidth = freqs[-1] / self.num_filters
+            filter_bank = torch.zeros(self.num_filters, n_freq_bins, device=x.device)
+            for i in range(self.num_filters):
+                center = (i + 0.5) * bandwidth
+                filter_bank[i] = torch.exp(
+                    -0.5 * ((freqs - center) / (bandwidth / 2 + 1e-8)) ** 2
+                )
+
+        # 3. Apply Mel Filter Bank
+        # filter_bank: (n_mels, n_freq)
+        # power_spec: (B*D, n_freq, n_time)
+        # result: (B*D, n_mels, n_time)
         mel_spectrograms = torch.matmul(filter_bank, power_spec)
+
+        # 4. Log Scale (dB)
         mel_spectrograms = 10 * torch.log10(mel_spectrograms + 1e-6)
+
+        # 5. Reshape back and Normalize
         mel_spectrograms = mel_spectrograms.reshape(B, D, self.num_filters, n_time_bins)
 
+        # CHANGE：Multivariate Average Pooling
         if self.compress_vars:
             mel_spectrograms = mel_spectrograms.mean(dim=1, keepdim=True)
 
@@ -720,32 +685,93 @@ class MT2VEncoder(nn.Module):
             mode="bilinear",
             align_corners=False,
         )
+
+        # Normalize per image after interpolation
         mel_spectrograms = self.normalize_per_image(mel_spectrograms)
 
         return mel_spectrograms
 
     def s_transform(self, x):
         """
-        Cached-mask S-transform.
-        Fully differentiable w.r.t. x.
+        Stockwell Transform (S-Transform) implementation on GPU.
+        S-Transform provides frequency-dependent resolution (multi-resolution),
+        similar to Wavelet Transform but directly linked to Fourier spectrum (preserves phase).
+
+        S(tau, f) = IFFT( X(v) * W(v-f) )
+        where W(v) is a Gaussian window with width proportional to f.
         """
         B, L, D = x.shape
 
+        # 1. Prepare Data & FFT
         x_flat = x.permute(0, 2, 1).reshape(B * D, L)
+        # Standardize to ensure consistent spectral magnitude
         x_norm = self.standardize_per_series(x_flat)
 
-        Xf = torch.fft.fft(x_norm, dim=-1)
-        mask = self._get_s_transform_mask(L, x.device, Xf.real.dtype)
+        # Compute Full FFT
+        Xf = torch.fft.fft(x_norm, dim=-1)  # (B*D, L)
 
-        Y = Xf.unsqueeze(1) * mask.unsqueeze(0)
-        S_complex = torch.fft.ifft(Y, dim=-1)
+        # 2. Define Frequencies
+        # FFT frequencies indices: [0, 1, ..., L/2, -L/2, ..., -1]
+        # We construct a vector 'k' representing the frequency indices
+        if L % 2 == 0:
+            k = torch.cat(
+                [
+                    torch.arange(L // 2, device=x.device),
+                    torch.arange(-L // 2, 0, device=x.device),
+                ]
+            ).float()
+        else:
+            k = torch.cat(
+                [
+                    torch.arange((L - 1) // 2 + 1, device=x.device),
+                    torch.arange(-(L - 1) // 2, 0, device=x.device),
+                ]
+            ).float()
+
+        # Target frequencies 'f' to analyze
+        # We analyze positive frequencies from 1 to L//2
+        # (ignoring DC component and negative frequencies for the "image")
+        max_f = L // 2
+        f = torch.arange(1, max_f + 1, device=x.device).float().unsqueeze(1)  # (F, 1)
+
+        # 3. Construct Gaussian Windows Matrix
+        # Window function: G(k, f) = exp( -2 * pi^2 * (k - f)^2 / f^2 )
+        # k: (1, L)
+        # f: (F, 1)
+        # Broadcasting -> (F, L)
+
+        # Note: We need to handle the circular frequency distance for correct windowing?
+        # In standard S-transform, it's linear frequency.
+        # But since we use DFT, the window should ideally wrap around.
+        # However, for meaningful f (>=1) and large L, the Gaussian is narrow enough
+        # that wrapping is negligible, except maybe for very highest frequencies.
+        # We'll use direct difference.
+
+        exponent = -2 * (torch.pi**2) * (k.unsqueeze(0) - f) ** 2 / (f**2)
+        mask = torch.exp(exponent)  # (F, L)
+
+        # 4. Apply Windows and IFFT
+        # Xf: (B*D, L) -> (B*D, 1, L)
+        # mask: (F, L) -> (1, F, L)
+        Y = Xf.unsqueeze(1) * mask.unsqueeze(0)  # (B*D, F, L)
+
+        # IFFT along the last dimension to get time domain complex S-series
+        S_complex = torch.fft.ifft(Y, dim=-1)  # (B*D, F, L)
+
+        # 5. Magnitude
+        # We use magnitude for visualization
         S_mag = torch.abs(S_complex)
 
+        # 6. Reshape and Post-process
+        # Reshape back to (B, D, F, L)
         S_mag = S_mag.reshape(B, D, S_mag.shape[1], L)
 
+        # Compress Variables if needed
         if self.compress_vars:
             S_mag = S_mag.mean(dim=1, keepdim=True)
 
+        # Interpolate to target image size
+        # Input (B, D, F, L), Output (B, D, H, W)
         S_img = F.interpolate(
             S_mag,
             size=(self.image_size, self.image_size),
@@ -753,7 +779,10 @@ class MT2VEncoder(nn.Module):
             align_corners=False,
         )
 
+        # Flip Y axis (to have low freq at bottom)
         S_img = torch.flip(S_img, [2])
+
+        # Normalize per image
         S_img = self.normalize_per_image(S_img)
 
         return S_img
@@ -968,38 +997,67 @@ class MT2VEncoder(nn.Module):
 
     def plot_mapping(self, x):
         """
-        Differentiable soft line rendering with configurable supersampling.
+        Maps time series to a 2D image where x-axis is time and y-axis is value.
+        Uses soft rendering (Gaussian) for differentiability.
+        Implements super-sampling to ensure continuous lines even with high slopes.
         """
         B, L, D = x.shape
         H, W = self.image_size, self.image_size
 
-        scale_factor = 2 if H >= 224 else 4
+        # Super-sampling factor to mitigate aliasing/discontinuity
+        # A factor of 4 reduces the step size by 4, making it much likely
+        # that adjacent points are within the sigma radius.
+        scale_factor = 4
         W_scaled = W * scale_factor
 
-        x_norm = self.normalize_per_series(x)
+        # 1. Normalize x to [0, H-1] range
+        # Use min-max normalization per series to fit in the image height
+        x_norm = self.normalize_per_series(x)  # (B, L, D) in [0, 1]
         x_scaled = x_norm * (H - 1)
 
+        # 2. Resize to W_scaled (Time axis)
+        # Permute to (B, D, L) for interpolate
+        x_perm = x_scaled.permute(0, 2, 1)
+        # Linear interpolation to match image width
         x_resized = F.interpolate(
-            x_scaled.permute(0, 2, 1),
-            size=W_scaled,
-            mode="linear",
-            align_corners=True,
-        )
+            x_perm, size=W_scaled, mode="linear", align_corners=True
+        )  # (B, D, W_scaled)
 
-        y_grid = self._get_plot_y_grid(H, x.device, x.dtype)
+        # 3. Create Grid
+        # y_grid: (1, 1, H, 1) -> Represents coordinate of each pixel row
+        y_grid = torch.arange(H, device=x.device, dtype=x.dtype).view(1, 1, H, 1)
+
+        # x_resized: (B, D, 1, W_scaled) -> Represents the target coordinate for each column
         y_centers = x_resized.unsqueeze(2)
 
+        # 4. Gaussian Soft Rendering
+        # Sigma controls the "thickness".
         sigma = max(0.5, self.plot_line_thickness / 2.0)
-        dist_sq = (y_grid - y_centers) ** 2
-        intensity = torch.exp(-dist_sq / (2 * sigma**2))
 
+        # Distance squared from the center line (Broadcasting automatically)
+        dist_sq = (y_grid - y_centers) ** 2
+
+        # Intensity = exp(-dist / 2sigma^2)
+        # This creates a soft band around the target value
+        intensity = torch.exp(-dist_sq / (2 * sigma**2)) # (B, D, H, W_scaled)
+
+        # 5. Downsample back to W (Anti-aliasing)
+        # We use Average Pooling to integrate the intensity over the super-sampled pixels
         if scale_factor > 1:
             intensity = F.avg_pool2d(
-                intensity,
-                kernel_size=(1, scale_factor),
-                stride=(1, scale_factor),
+                intensity, 
+                kernel_size=(1, scale_factor), 
+                stride=(1, scale_factor)
             )
 
+        # Scale intensity back up because avg_pool reduces peak brightness for thin lines
+        # But for visualization/features, preserving the integral (energy) is often better.
+        # Let's keep it normalized to [0, 1] range roughly.
+        # Since we spread a point over 'scale_factor' pixels, the max intensity might drop.
+        # However, if the line is horizontal, all 'scale_factor' pixels are 1, so avg is 1.
+        # If the line is vertical, only few pixels are lit.
+        # This behavior is actually correct for anti-aliasing (lines appearing thinner/dimmer when moving fast).
+        
         return intensity
 
     def heat_mapping(self, x):
@@ -1031,22 +1089,66 @@ class MT2VEncoder(nn.Module):
         """
         Maps time series to a 2D image where x-axis is time and y-axis is smoothing granularity.
         Bottom (y=H-1) is window size 1 (raw). Top (y=0) is max window size.
-        Fully differentiable w.r.t. x.
         """
         B, L, D = x.shape
         H, W = self.image_size, self.image_size
 
-        x_norm = self.normalize_per_series(x)
-        x_resized = F.interpolate(
-            x_norm.permute(0, 2, 1), size=W, mode="linear", align_corners=True
-        )
+        # 1. Normalize x to [0, 1] range
+        x_norm = self.normalize_per_series(x)  # (B, L, D)
 
-        weights, K_max = self._get_smooth_weights(
-            H=H, W=W, D=D, device=x.device, dtype=x.dtype
-        )
+        # 2. Resize to W (Time axis)
+        x_perm = x_norm.permute(0, 2, 1)  # (B, D, L)
+        x_resized = F.interpolate(
+            x_perm, size=W, mode="linear", align_corners=True
+        )  # (B, D, W)
+
+        # 3. Construct Convolution Kernels for Moving Average
+        # Max window size is roughly W/4. Ensure it's odd for symmetric padding.
+        # Ensure at least size 3 to have some smoothing effect at the top.
+        target_max = max(3, W // 4)
+        K_max = target_max if target_max % 2 == 1 else target_max - 1
+
+        # Initialize weights: (H, 1, K_max)
+        weights = torch.zeros(H, 1, K_max, device=x.device, dtype=x.dtype)
+
+        # Generate window sizes for each row h
+        # h=0 (Top) -> K_max
+        # h=H-1 (Bottom) -> 1
+        for h in range(H):
+            # Linearly interpolate window size
+            # h goes 0 -> H-1.
+            # We want k to go K_max -> 1.
+            # k = 1 + (K_max - 1) * (H - 1 - h) / (H - 1)
+
+            progress = (H - 1 - h) / (H - 1)  # 1.0 at h=0, 0.0 at h=H-1
+            k_float = 1 + (K_max - 1) * progress
+            k = int(round(k_float))
+
+            # Ensure k is odd
+            if k % 2 == 0:
+                k += 1
+            # Clamp k to be at most K_max
+            k = min(k, K_max)
+
+            # Create average kernel
+            start = (K_max - k) // 2
+            weights[h, 0, start : start + k] = 1.0 / k
+
+        # 4. Apply Convolution
+        # If D > 1, we need to repeat weights for grouped convolution
+        # Input: (B, D, W)
+        # Weights: (D*H, 1, K_max)
+        # Groups: D
+        if D > 1:
+            weights = weights.repeat(D, 1, 1)
+
+        # Padding 'same': pad = K_max // 2
         padding = K_max // 2
 
+        # Output: (B, D*H, W)
         output = F.conv1d(x_resized, weights, padding=padding, groups=D)
+
+        # 5. Reshape to (B, D, H, W)
         output = output.view(B, D, H, W)
 
         return output

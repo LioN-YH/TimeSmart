@@ -123,6 +123,11 @@ class Exp_Basic(object):
 
             self.model_dict["TimeApart"] = TimeApart
 
+        elif args.model == "TimeMix":
+            from src.TimeApart import modelMix as TimeMix
+
+            self.model_dict["TimeMix"] = TimeMix
+
         # 获取设备（GPU 或 CPU）
         self.device = self._acquire_device()
         # 构建模型并移动到指定设备

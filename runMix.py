@@ -2,7 +2,7 @@ import argparse
 import os
 import torch
 from exp.exp_few_shot_forecasting import Exp_Few_Shot_Forecast
-from exp.exp_long_term_forecasting_origin import Exp_Long_Term_Forecast
+from exp.exp_long_term_forecasting_mix import Exp_Long_Term_Forecast
 from exp.exp_zero_shot_forecasting import Exp_Zero_Shot_Forecast
 from exp.exp_imputation import Exp_Imputation
 from exp.exp_short_term_forecasting import Exp_Short_Term_Forecast
@@ -24,67 +24,6 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError("Boolean value expected.")
-
-
-def _parse_csv_arg(value):
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    return [item.strip() for item in str(value).split(",") if item.strip()]
-
-
-def _prepare_mix_args(args):
-    args.mix_data_paths = _parse_csv_arg(args.mix_data_paths)
-    mix_weight_tokens = _parse_csv_arg(args.mix_weights)
-    args.mix_weights = (
-        [float(x) for x in mix_weight_tokens] if mix_weight_tokens else []
-    )
-    args.mix_data_names = _parse_csv_arg(args.mix_data_names)
-    args.mix_data_types = _parse_csv_arg(args.mix_data_types)
-    args.mix_root_paths = _parse_csv_arg(args.mix_root_paths)
-    args.mix_freqs = _parse_csv_arg(args.mix_freqs)
-    args.mix_targets = _parse_csv_arg(args.mix_targets)
-    args.mix_features = _parse_csv_arg(args.mix_features)
-
-    if not args.use_mix_dataset:
-        return args
-
-    if len(args.mix_data_paths) < 2:
-        raise ValueError(
-            "When --use_mix_dataset=true, please provide at least two files in --mix_data_paths."
-        )
-    if len(args.mix_weights) != len(args.mix_data_paths):
-        raise ValueError(
-            "--mix_weights must have the same number of entries as --mix_data_paths."
-        )
-    if not args.mix_data_names:
-        args.mix_data_names = [
-            os.path.splitext(os.path.basename(path))[0] for path in args.mix_data_paths
-        ]
-    if len(args.mix_data_names) != len(args.mix_data_paths):
-        raise ValueError(
-            "--mix_data_names must have the same number of entries as --mix_data_paths."
-        )
-    if not args.mix_data_types:
-        args.mix_data_types = [args.data for _ in args.mix_data_paths]
-    if len(args.mix_data_types) != len(args.mix_data_paths):
-        raise ValueError(
-            "--mix_data_types must have the same number of entries as --mix_data_paths."
-        )
-
-    for optional_name in ["mix_root_paths", "mix_freqs", "mix_targets", "mix_features"]:
-        optional_values = getattr(args, optional_name)
-        if len(optional_values) not in [0, len(args.mix_data_paths)]:
-            raise ValueError(
-                f"--{optional_name} must be empty or have the same number of entries as --mix_data_paths."
-            )
-
-    weight_sum = sum(args.mix_weights)
-    if weight_sum <= 0:
-        raise ValueError("--mix_weights must sum to a positive value.")
-    args.mix_weights = [w / weight_sum for w in args.mix_weights]
-    return args
 
 
 if __name__ == "__main__":
@@ -132,66 +71,6 @@ if __name__ == "__main__":
         help="root path of the data file",
     )
     parser.add_argument("--data_path", type=str, default="ETTh1.csv", help="data file")
-    parser.add_argument(
-        "--use_mix_dataset",
-        type=str2bool,
-        default=False,
-        help="whether to use sample-level mixed training dataset",
-    )
-    parser.add_argument(
-        "--mix_data_paths",
-        type=str,
-        default="",
-        help="comma separated csv file names for mixed training, e.g. a.csv,b.csv",
-    )
-    parser.add_argument(
-        "--mix_weights",
-        type=str,
-        default="",
-        help="comma separated mixing weights, e.g. 1,3",
-    )
-    parser.add_argument(
-        "--mix_data_names",
-        type=str,
-        default="",
-        help="comma separated display names for mixed datasets",
-    )
-    parser.add_argument(
-        "--mix_epoch_len",
-        type=int,
-        default=0,
-        help="total number of mixed training samples per epoch; 0 means max dataset length",
-    )
-    parser.add_argument(
-        "--mix_data_types",
-        type=str,
-        default="",
-        help="comma separated dataset types for each mixed dataset, e.g. ETTh1,ETTm1,custom",
-    )
-    parser.add_argument(
-        "--mix_root_paths",
-        type=str,
-        default="",
-        help="comma separated root paths for each mixed dataset; empty means reuse --root_path",
-    )
-    parser.add_argument(
-        "--mix_freqs",
-        type=str,
-        default="",
-        help="comma separated freq values for each mixed dataset; empty means reuse --freq",
-    )
-    parser.add_argument(
-        "--mix_targets",
-        type=str,
-        default="",
-        help="comma separated target column names for each mixed dataset; empty means reuse --target",
-    )
-    parser.add_argument(
-        "--mix_features",
-        type=str,
-        default="",
-        help="comma separated feature modes for each mixed dataset; empty means reuse --features",
-    )
     parser.add_argument(
         "--features",
         type=str,
@@ -352,6 +231,106 @@ if __name__ == "__main__":
     )
 
     parser.add_argument("--norm_const", type=float, default=0.4)
+
+    # soft router
+    parser.add_argument(
+        "--router_temperature",
+        type=float,
+        default=5.0,
+        help="temperature for seg/smooth soft router; larger is closer to hard routing",
+    )
+    parser.add_argument(
+        "--router_bias",
+        type=float,
+        default=0.0,
+        help="bias term for router score gap",
+    )
+    parser.add_argument(
+        "--router_detach_score",
+        type=str2bool,
+        default=False,
+        help="whether to detach routing scores before computing gate weights",
+    )
+    parser.add_argument(
+        "--router_aux_weight",
+        type=float,
+        default=0.0,
+        help="weight for router balance auxiliary loss",
+    )
+    parser.add_argument(
+        "--router_balance_target",
+        type=float,
+        default=0.5,
+        help="target mean seg weight for router balance regularization",
+    )
+    parser.add_argument(
+        "--router_entropy_weight",
+        type=float,
+        default=0.0,
+        help="entropy regularization weight for router weights",
+    )
+
+    # mixed dataset
+    parser.add_argument(
+        "--use_mix_dataset",
+        type=str2bool,
+        default=False,
+        help="whether to use mixed dataset training",
+    )
+    parser.add_argument(
+        "--mix_data_paths",
+        type=str,
+        default="",
+        help="comma separated csv file names for mixed training, e.g. a.csv,b.csv",
+    )
+    parser.add_argument(
+        "--mix_weights",
+        type=str,
+        default="",
+        help="comma separated mix weights, e.g. 1,1 or 1,3",
+    )
+    parser.add_argument(
+        "--mix_data_names",
+        type=str,
+        default="",
+        help="comma separated dataset names for logging, e.g. seasonal,trend",
+    )
+    parser.add_argument(
+        "--mix_epoch_len",
+        type=int,
+        default=0,
+        help="optional epoch length for mixed dataset; 0 means use max subdataset length",
+    )
+    parser.add_argument(
+        "--mix_data_types",
+        type=str,
+        default="",
+        help="comma separated dataset types for each mixed dataset, e.g. ETTh1,ETTm1,custom",
+    )
+    parser.add_argument(
+        "--mix_root_paths",
+        type=str,
+        default="",
+        help="comma separated root paths for each mixed dataset; empty means reuse --root_path",
+    )
+    parser.add_argument(
+        "--mix_freqs",
+        type=str,
+        default="",
+        help="comma separated freq values for each mixed dataset; empty means reuse --freq",
+    )
+    parser.add_argument(
+        "--mix_targets",
+        type=str,
+        default="",
+        help="comma separated target column names for each mixed dataset; empty means reuse --target",
+    )
+    parser.add_argument(
+        "--mix_features",
+        type=str,
+        default="",
+        help="comma separated feature modes for each mixed dataset; empty means reuse --features",
+    )
 
     parser.add_argument(
         "--finetune_vlm", type=str2bool, default=False, help="finetune VLM model"
@@ -716,8 +695,78 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    args = _prepare_mix_args(args)
-    args.use_gpu = True if torch.cuda.is_available() else False
+    # parse mixed dataset arguments
+    if isinstance(args.mix_data_paths, str):
+        args.mix_data_paths = [
+            x.strip() for x in args.mix_data_paths.split(",") if x.strip()
+        ]
+
+    if isinstance(args.mix_weights, str):
+        args.mix_weights = [
+            float(x.strip()) for x in args.mix_weights.split(",") if x.strip()
+        ]
+
+    if isinstance(args.mix_data_names, str):
+        args.mix_data_names = [
+            x.strip() for x in args.mix_data_names.split(",") if x.strip()
+        ]
+
+    if isinstance(args.mix_data_types, str):
+        args.mix_data_types = [
+            x.strip() for x in args.mix_data_types.split(",") if x.strip()
+        ]
+
+    if isinstance(args.mix_root_paths, str):
+        args.mix_root_paths = [
+            x.strip() for x in args.mix_root_paths.split(",") if x.strip()
+        ]
+
+    if isinstance(args.mix_freqs, str):
+        args.mix_freqs = [x.strip() for x in args.mix_freqs.split(",") if x.strip()]
+
+    if isinstance(args.mix_targets, str):
+        args.mix_targets = [x.strip() for x in args.mix_targets.split(",") if x.strip()]
+
+    if isinstance(args.mix_features, str):
+        args.mix_features = [
+            x.strip() for x in args.mix_features.split(",") if x.strip()
+        ]
+
+    if getattr(args, "use_mix_dataset", False):
+        if len(args.mix_data_paths) < 2:
+            raise ValueError(
+                "use_mix_dataset=True requires at least two mix_data_paths."
+            )
+        if len(args.mix_data_paths) != len(args.mix_weights):
+            raise ValueError(
+                "mix_data_paths and mix_weights must have the same length."
+            )
+        if len(args.mix_data_names) == 0:
+            args.mix_data_names = [
+                f"dataset_{i}" for i in range(len(args.mix_data_paths))
+            ]
+        if len(args.mix_data_names) != len(args.mix_data_paths):
+            raise ValueError(
+                "mix_data_names and mix_data_paths must have the same length."
+            )
+        if len(args.mix_data_types) == 0:
+            args.mix_data_types = [args.data for _ in range(len(args.mix_data_paths))]
+        if len(args.mix_data_types) != len(args.mix_data_paths):
+            raise ValueError(
+                "mix_data_types and mix_data_paths must have the same length."
+            )
+        for optional_name in [
+            "mix_root_paths",
+            "mix_freqs",
+            "mix_targets",
+            "mix_features",
+        ]:
+            optional_values = getattr(args, optional_name)
+            if len(optional_values) not in [0, len(args.mix_data_paths)]:
+                raise ValueError(
+                    f"{optional_name} must be empty or have the same length as mix_data_paths."
+                )
+        args.use_gpu = True if torch.cuda.is_available() else False
 
     # set gpu id
     if args.use_gpu and args.use_multi_gpu:

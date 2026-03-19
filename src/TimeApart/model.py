@@ -18,186 +18,60 @@ class MethodInputProjector(nn.Module):
     def __init__(self, method):
         super(MethodInputProjector, self).__init__()
         self.method = method
-
-        self.freq_mag_methods = ["stft", "wavelet", "mel"]
-        self.freq_phase_methods = ["cwt", "st"]
-        self.relation_methods = ["gaf", "rp", "mtf"]
-        self.structured_methods = ["seg", "hilbert"]
-        self.plot_methods = ["plot"]
+        
+        # Classification of methods
+        self.freq_methods = ["stft", "wavelet", "cwt", "mel", "st"]
+        self.visual_methods = ["plot", "smooth"]
         self.heat_methods = ["heat"]
-        self.smooth_methods = ["smooth"]
+        # Others: ["gaf", "rp", "mtf"] (Correlation) and ["seg", "hilbert"] (Structured) -> Default handling
 
+        if method in self.freq_methods:
+            # Frequency Domain: Anisotropic filtering to capture time/freq axes
+            # Channel 0: Horizontal (Time continuity)
+            self.conv_h = nn.Conv2d(1, 1, kernel_size=(1, 5), padding=(0, 2))
+            # Channel 1: Vertical (Frequency/Scale spread)
+            self.conv_v = nn.Conv2d(1, 1, kernel_size=(5, 1), padding=(2, 0))
+            # Channel 2: Local Texture
+            self.conv_t = nn.Conv2d(1, 1, kernel_size=3, padding=1)
+        elif method in self.heat_methods:
+            # Heatmap is vertically redundant (time series expanded to image)
+            # We use multi-scale horizontal convolutions to capture temporal patterns
+            # Channel 0: Short-term details (Kernel 1x3)
+            self.conv_s = nn.Conv2d(1, 1, kernel_size=(1, 3), padding=(0, 1))
+            # Channel 1: Medium-term trends (Kernel 1x7)
+            self.conv_m = nn.Conv2d(1, 1, kernel_size=(1, 7), padding=(0, 3))
+            # Channel 2: Long-term trends (Kernel 1x11)
+            self.conv_l = nn.Conv2d(1, 1, kernel_size=(1, 11), padding=(0, 5))
+        elif method in self.visual_methods:
+            # Visual/Line plots: Larger kernel to capture sparse line features
+            self.proj = nn.Conv2d(1, 3, kernel_size=7, padding=3)
+            
+        else:
+            # Correlation/Structured: Standard local feature extraction
+            # Using 3x3 kernel to map 1 channel to 3 channels
+            self.proj = nn.Conv2d(1, 3, kernel_size=3, padding=1)
+            
         self.act = nn.GELU()
 
-        # shared residual shortcut
-        self.shortcut = nn.Conv2d(1, 3, kernel_size=1, bias=False)
-
-        if method in self.freq_mag_methods:
-            self.branch1 = nn.Conv2d(
-                1, 1, kernel_size=(1, 7), padding=(0, 3), bias=False
-            )
-            self.branch2 = nn.Conv2d(
-                1, 1, kernel_size=(7, 1), padding=(3, 0), bias=False
-            )
-            self.branch3 = nn.Conv2d(1, 1, kernel_size=3, padding=1, bias=False)
-
-        elif method in self.freq_phase_methods:
-            self.branch1 = nn.Conv2d(
-                1, 1, kernel_size=(1, 7), padding=(0, 3), bias=False
-            )
-            self.branch2 = nn.Conv2d(
-                1, 1, kernel_size=(7, 1), padding=(3, 0), bias=False
-            )
-            self.branch3 = nn.Conv2d(1, 1, kernel_size=5, padding=2, bias=False)
-
-        elif method in self.relation_methods:
-            self.branch1 = nn.Conv2d(1, 1, kernel_size=3, padding=1, bias=False)
-            self.branch2 = nn.Conv2d(1, 1, kernel_size=5, padding=2, bias=False)
-            self.branch3 = nn.Sequential(
-                nn.Conv2d(1, 1, kernel_size=(1, 7), padding=(0, 3), bias=False),
-                nn.GELU(),
-                nn.Conv2d(1, 1, kernel_size=(7, 1), padding=(3, 0), bias=False),
-            )
-
-        elif method in self.structured_methods:
-            self.branch1 = nn.Conv2d(1, 1, kernel_size=3, padding=1, bias=False)
-            self.branch2 = nn.Conv2d(1, 1, kernel_size=5, padding=2, bias=False)
-            self.branch3 = nn.Conv2d(1, 1, kernel_size=7, padding=3, bias=False)
-
-        elif method in self.plot_methods:
-            self.branch1 = nn.Conv2d(1, 1, kernel_size=7, padding=3, bias=False)
-            self.branch2 = nn.Conv2d(
-                1, 1, kernel_size=(1, 11), padding=(0, 5), bias=False
-            )
-            self.branch3 = nn.Conv2d(
-                1, 1, kernel_size=(11, 1), padding=(5, 0), bias=False
-            )
-
-        elif method in self.heat_methods:
-            self.branch1 = nn.Conv2d(
-                1, 1, kernel_size=(1, 3), padding=(0, 1), bias=False
-            )
-            self.branch2 = nn.Conv2d(
-                1, 1, kernel_size=(1, 7), padding=(0, 3), bias=False
-            )
-            self.branch3 = nn.Conv2d(
-                1, 1, kernel_size=(1, 11), padding=(0, 5), bias=False
-            )
-
-        elif method in self.smooth_methods:
-            self.branch1 = nn.Conv2d(
-                1, 1, kernel_size=(1, 3), padding=(0, 1), bias=False
-            )
-            self.branch2 = nn.Conv2d(
-                1, 1, kernel_size=(1, 9), padding=(0, 4), bias=False
-            )
-            self.branch3 = nn.Conv2d(1, 1, kernel_size=3, padding=1, bias=False)
-
-        else:
-            self.proj = nn.Conv2d(1, 3, kernel_size=3, padding=1, bias=False)
-
-        self.fuse = nn.Sequential(nn.Conv2d(3, 3, kernel_size=1, bias=False), nn.GELU())
-
     def forward(self, x):
+        # x: [B, 1, H, W] or [B, H, W] (if squeezed)
         if x.dim() == 3:
             x = x.unsqueeze(1)
-
-        if hasattr(self, "proj"):
+            
+        if self.method in self.freq_methods:
+            h = self.conv_h(x)
+            v = self.conv_v(x)
+            t = self.conv_t(x)
+            out = torch.cat([h, v, t], dim=1)
+        elif self.method in self.heat_methods:
+            s = self.conv_s(x)
+            m = self.conv_m(x)
+            l = self.conv_l(x)
+            out = torch.cat([s, m, l], dim=1)
+        else:
             out = self.proj(x)
-            out = out + self.shortcut(x)
-            return self.act(out)
-
-        b1 = self.branch1(x)
-        b2 = self.branch2(x)
-        b3 = self.branch3(x)
-
-        out = torch.cat([b1, b2, b3], dim=1)  # [B, 3, H, W]
-        out = self.fuse(out) + self.shortcut(x)
+            
         return self.act(out)
-
-
-class InputAlignStem(nn.Module):
-    """
-    Align ts2img pseudo-images to a distribution that is easier for pretrained ConvNeXt to consume.
-    Lightweight, trainable, and stable for small batch sizes.
-    """
-
-    def __init__(self, in_channels=3, hidden_channels=16, out_channels=3):
-        super(InputAlignStem, self).__init__()
-        self.net = nn.Sequential(
-            nn.GroupNorm(
-                1, in_channels
-            ),  # channel-wise normalization, batch-size friendly
-            nn.Conv2d(
-                in_channels, hidden_channels, kernel_size=3, padding=1, bias=False
-            ),
-            nn.GELU(),
-            nn.GroupNorm(4 if hidden_channels >= 4 else 1, hidden_channels),
-            nn.Conv2d(hidden_channels, out_channels, kernel_size=1, bias=False),
-        )
-
-    def forward(self, x):
-        # x: [B, 3, H, W]
-        y = self.net(x)
-        return x + y
-
-
-class StructuredPoolingHead(nn.Module):
-    """
-    Replace naive flatten with structured pooling.
-
-    Input:
-        x: [B, C, H, W]
-
-    Output:
-        pooled feature: [B, out_dim]
-    """
-
-    def __init__(self, in_channels, in_h, in_w, proj_dim=1024, dropout=0.1):
-        super(StructuredPoolingHead, self).__init__()
-
-        self.in_channels = in_channels
-        self.in_h = in_h
-        self.in_w = in_w
-
-        # Global summaries
-        self.gap = nn.AdaptiveAvgPool2d((1, 1))
-        self.gmp = nn.AdaptiveMaxPool2d((1, 1))
-
-        # Structured summaries
-        # row_pool: preserve height structure, average over width
-        # shape -> [B, C, H]
-        # col_pool: preserve width structure, average over height
-        # shape -> [B, C, W]
-
-        total_dim = (
-            in_channels  # GAP
-            + in_channels  # GMP
-            + in_channels * in_h  # Row pooling
-            + in_channels * in_w  # Col pooling
-        )
-
-        self.proj = nn.Sequential(
-            nn.Linear(total_dim, proj_dim),
-            nn.GELU(),
-            nn.LayerNorm(proj_dim),
-            nn.Dropout(dropout),
-        )
-
-        self.out_dim = proj_dim
-
-    def forward(self, x):
-        # x: [B, C, H, W]
-        b, c, h, w = x.shape
-
-        gap = self.gap(x).flatten(1)  # [B, C]
-        gmp = self.gmp(x).flatten(1)  # [B, C]
-        row_pool = x.mean(dim=3).reshape(b, c * h)  # [B, C*H]
-        col_pool = x.mean(dim=2).reshape(b, c * w)  # [B, C*W]
-
-        feat = torch.cat([gap, gmp, row_pool, col_pool], dim=1)
-        feat = self.proj(feat)
-        return feat
 
 
 class Model(nn.Module):
@@ -230,18 +104,10 @@ class Model(nn.Module):
             configs.periodicity = 24  # Default periodicity
 
         self.img_encoder = MT2VEncoder(configs)
-
+        
         # 3. Method-Specific Input Projector
         # Replaces simple channel repetition with learnable, method-aware projection
         self.input_projector = MethodInputProjector(self.method)
-
-        # 3.5 Input Alignment Stem
-        # Learnable distribution alignment before ConvNeXt
-        self.input_align = InputAlignStem(
-            in_channels=3,
-            hidden_channels=16,
-            out_channels=3,
-        )
 
         # 4. Backbone (Shared Pretrained ConvNeXt)
         print("Loading ConvNeXt backbone...")
@@ -267,6 +133,7 @@ class Model(nn.Module):
         # Original: 7x7 spatial map for 224x224 input
 
         # 4. Neck (Dimensionality Reduction)
+        # Reduce 768x7x7 (37632) to something manageable using a Conv layer
         self.neck_channels = 256
         self.neck = nn.Sequential(
             nn.Conv2d(
@@ -280,51 +147,29 @@ class Model(nn.Module):
             nn.GELU(),
         )
 
-        # Calculate neck output shape dynamically using a real dummy image
+        # Calculate backbone_dim dynamically after Neck
         with torch.no_grad():
-            ref_param = next(self.backbone.parameters())
-            dummy_img = torch.zeros(
-                1,
-                3,
-                configs.image_size,
-                configs.image_size,
-                device=ref_param.device,
-                dtype=ref_param.dtype,
+            # Dummy input representing last_hidden_state: [1, 768, 7, 7]
+            dummy_h = configs.image_size // 32
+            dummy_input = torch.zeros(
+                1, self.backbone.config.hidden_sizes[-1], dummy_h, dummy_h
             )
+            dummy_output = self.neck(dummy_input)
+            self.backbone_dim = (
+                dummy_output.numel()
+            )  # Flattened size: e.g. 256 * 4 * 4 = 4096
 
-            # Real backbone forward
-            dummy_feat = self.backbone(dummy_img).last_hidden_state  # [1, C, H', W']
-            _, backbone_c, backbone_h, backbone_w = dummy_feat.shape
-            print(
-                f"Backbone output shape: C={backbone_c}, H={backbone_h}, W={backbone_w}"
-            )
+        print(f"Feature dimension after Neck: {self.backbone_dim}")
 
-            # Neck forward
-            dummy_output = self.neck(dummy_feat)  # [1, Cn, Hn, Wn]
-            _, neck_c, neck_h, neck_w = dummy_output.shape
-
-        print(f"Neck output shape: C={neck_c}, H={neck_h}, W={neck_w}")
-
-        # Structured pooling head
-        self.pooling_head = StructuredPoolingHead(
-            in_channels=neck_c,
-            in_h=neck_h,
-            in_w=neck_w,
-            proj_dim=1024,
-            dropout=configs.dropout,
-        )
-
-        self.backbone_dim = self.pooling_head.out_dim
-        print(f"Feature dimension after structured pooling: {self.backbone_dim}")
-
-        # Adapter
+        # 5. Adapter
+        # Specific adapter for the chosen branch/method
         self.adapter = Adapter(
-            self.backbone_dim,
-            self.backbone_dim // 4,
-            self.backbone_dim,
+            self.backbone_dim, self.backbone_dim // 4, self.backbone_dim
         )
 
-        # Prediction head
+        # 5. Prediction Head (MLP)
+        # Maps backbone features to prediction length
+        # Increased hidden dimension from 512 to 2048 to prevent information bottleneck for long horizons
         head_hidden_dim = 512
         self.head = nn.Sequential(
             nn.Linear(self.backbone_dim, head_hidden_dim),
@@ -350,21 +195,25 @@ class Model(nn.Module):
 
         # 3. Backbone Encoding (Iterate over D to save GPU memory)
         feats = []
-        # If the backbone is frozen (requires_grad=False), its parameters will not be updated.
-        # However, because we do NOT wrap the backbone forward with torch.no_grad(),
-        # gradients can still flow through the backbone computation graph and update
-        # upstream trainable modules such as input_projector.
-
+        is_frozen = (
+            hasattr(self.configs, "finetune_vlm") and not self.configs.finetune_vlm
+        )
+        
+        # Warning: If backbone is frozen, input_projector cannot be trained!
+        # We assume that if input_projector is used, finetune_vlm should be True
+        # or at least the user is aware.
+        
         for d in range(D):
             img_d = images[:, d]  # [B, 1, H, W]
-
-            # 1) method-aware projection
-            img_d_proj = self.input_projector(img_d)  # [B, 3, H, W]
-
-            # 2) learnable alignment before pretrained ConvNeXt
-            img_d_proj = self.input_align(img_d_proj)  # [B, 3, H, W]
-
-            # 3) ConvNeXt encoding
+            
+            # Apply Method-Specific Projection
+            # This maps 1 channel to 3 channels using method-specific kernels
+            img_d_proj = self.input_projector(img_d) # [B, 3, H, W]
+            
+            # Even if backbone is frozen (finetune_vlm=False), we avoid torch.no_grad() here.
+            # This ensures gradients can flow back through the backbone to update the 
+            # input_projector parameters, while the backbone weights remain static 
+            # (due to requires_grad=False set in __init__).
             out = self.backbone(img_d_proj).last_hidden_state  # [B, C, H', W']
 
             feats.append(out)
@@ -375,7 +224,7 @@ class Model(nn.Module):
 
         # 4. Neck
         feat = self.neck(feat)  # [B*D, C_neck, H_neck, W_neck]
-        feat = self.pooling_head(feat)  # [B*D, backbone_dim]
+        feat = feat.reshape(feat.size(0), -1)  # Flatten: [B*D, backbone_dim]
 
         # 5. Adapter
         feat = feat + self.adapter(feat)
